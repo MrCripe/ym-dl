@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp, type Page } from "./lib/store";
-import { Icon } from "./components/ui";
+import { Icon, Button } from "./components/ui";
 import Wizard from "./pages/Wizard";
 import Home from "./pages/Home";
 import Downloads from "./pages/Downloads";
@@ -44,31 +44,51 @@ export default function App() {
     return () => media.removeEventListener("change", apply);
   }, [settings]);
 
+  // The window is undecorated, so every screen needs the custom titlebar —
+  // otherwise the token wizard and the error screen cannot be closed or dragged.
   if (!ready) {
     return (
-      <div style={{ height: "100%", display: "grid", placeItems: "center" }}>
-        <span className="md-body muted">Запускаю ym-dl…</span>
+      <div className="app-shell">
+        <WindowTitlebar rail={false} />
+        <div style={{ height: "100%", display: "grid", placeItems: "center" }}>
+          <span className="md-body muted">Запускаю ym-dl…</span>
+        </div>
       </div>
     );
   }
 
   if (initError) {
     return (
-      <div style={{ height: "100%", display: "grid", placeItems: "center", padding: 32 }}>
-        <div style={{ maxWidth: 520, textAlign: "center" }}>
-          <Icon name="error" size={40} />
-          <div className="md-title" style={{ marginTop: 12 }}>
-            Не удалось прочитать настройки
-          </div>
-          <div className="md-body-sm muted" style={{ marginTop: 8 }}>
-            {initError}
+      <div className="app-shell">
+        <WindowTitlebar rail={false} />
+        <div style={{ height: "100%", display: "grid", placeItems: "center", padding: 32 }}>
+          <div style={{ maxWidth: 520, textAlign: "center" }}>
+            <Icon name="error" size={40} />
+            <div className="md-title" style={{ marginTop: 12 }}>
+              Не удалось прочитать настройки
+            </div>
+            <div className="md-body-sm muted" style={{ marginTop: 8 }}>
+              {initError}
+            </div>
+            <div style={{ marginTop: 20 }}>
+              <Button icon="refresh" onClick={() => init().catch(() => undefined)}>
+                Повторить
+              </Button>
+            </div>
           </div>
         </div>
       </div>
     );
   }
 
-  if (needsToken) return <Wizard />;
+  if (needsToken) {
+    return (
+      <div className="app-shell">
+        <WindowTitlebar rail={false} />
+        <Wizard />
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -124,7 +144,7 @@ export default function App() {
   );
 }
 
-function WindowTitlebar() {
+function WindowTitlebar({ rail = true }: { rail?: boolean }) {
   const win = getCurrentWindow();
   return (
     <div
@@ -137,7 +157,7 @@ function WindowTitlebar() {
         right: 0,
         height: 44,
         zIndex: 30,
-        paddingLeft: "calc(var(--rail-width) + 16px)",
+        paddingLeft: rail ? "calc(var(--rail-width) + 16px)" : 16,
       }}
     >
       <span className="brand" data-tauri-drag-region>

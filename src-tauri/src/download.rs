@@ -81,6 +81,7 @@ impl Shared {
             running,
             stopping: self.control.is_cancelled(),
             cancelled: false,
+            error: false,
         };
         let _ = self.app.emit(EVENT_PROGRESS, progress.clone());
         progress
@@ -109,24 +110,7 @@ impl Shared {
             Ok(claimed) => claimed,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if claimed.insert(path.clone()) {
-            return path;
-        }
-        let stem = path
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let extension = path.extension().map(|ext| ext.to_os_string());
-        for counter in 2..1000 {
-            let mut candidate = path.with_file_name(format!("{stem} ({counter})"));
-            if let Some(extension) = &extension {
-                candidate.set_extension(extension);
-            }
-            if claimed.insert(candidate.clone()) {
-                return candidate;
-            }
-        }
-        path
+        claim_path(&mut claimed, path)
     }
 
     fn settle(&self, index: usize, status: &str, message: &str, path: &str) {
@@ -206,16 +190,16 @@ impl Shared {
             state.status = "downloading".into();
         });
 
-        let Some(url) = info.urls.first().cloned() else {
+        if info.urls.is_empty() {
             self.settle(index, "failed", "сервер не вернул ссылку на файл", "");
             return;
-        };
+        }
 
         let shared = self.clone();
         let mut last_emit = Instant::now();
         let body = shared
             .client
-            .audio_stream(&url, |done, total| {
+            .audio_stream(&info.urls, |done, total| {
                 if last_emit.elapsed().as_millis() >= PROGRESS_INTERVAL_MS {
                     last_emit = Instant::now();
                     shared.update(index, |state| {
@@ -240,7 +224,7 @@ impl Shared {
         };
 
         let bytes = match info.key.as_deref().filter(|key| !key.is_empty()) {
-            Some(key) => match audio::decrypt(&body, key) {
+            Some(key) => match audio::decrypt(body, key) {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     self.settle(index, "failed", &format!("расшифровка не удалась: {error}"), "");
@@ -267,7 +251,12 @@ impl Shared {
 
         if self.settings.extract_flac && codec == "FLAC" && container == "MP4" && ffmpeg::available()
         {
-            match ffmpeg::extract_flac(&final_path).as_str() {
+            // ffmpeg is a blocking child process: keep it off the async runtime.
+            let source = final_path.clone();
+            let outcome = tauri::async_runtime::spawn_blocking(move || ffmpeg::extract_flac(&source))
+                .await
+                .unwrap_or_else(|_| "failed".to_string());
+            match outcome.as_str() {
                 "converted" => {
                     ffmpeg::quarantine(&final_path, target_dir);
                     final_path = final_path.with_extension("flac");
@@ -290,12 +279,6 @@ impl Shared {
             codec.to_string()
         };
         self.settle(index, "ok", &label, &final_path.display().to_string());
-
-        // Pause between tracks: the API throttles a burst of requests, and the
-        // setting exists for exactly that. Skipped when stopping.
-        if self.settings.delay > 0 && !self.control.is_cancelled() {
-            tokio::time::sleep(std::time::Duration::from_secs(self.settings.delay)).await;
-        }
     }
 
     async fn tag(&self, track: &Track, path: &Path, final_path: &Path, track_id: &str) -> Result<()> {
@@ -343,6 +326,29 @@ impl Shared {
 
         audio::write_tags(path, &payload)
     }
+}
+
+/// Reserves a unique path inside `claimed`, adding " (2)", " (3)" … on a clash.
+/// Two tracks that render to the same name would otherwise overwrite each other.
+fn claim_path(claimed: &mut std::collections::HashSet<PathBuf>, path: PathBuf) -> PathBuf {
+    if claimed.insert(path.clone()) {
+        return path;
+    }
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let extension = path.extension().map(|ext| ext.to_os_string());
+    for counter in 2..1000 {
+        let mut candidate = path.with_file_name(format!("{stem} ({counter})"));
+        if let Some(extension) = &extension {
+            candidate.set_extension(extension);
+        }
+        if claimed.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    path
 }
 
 pub struct Job {
@@ -448,6 +454,15 @@ impl Job {
                     shared.download_one(index, &tracks[index], &target_dir).await;
                     shared.counters.done.fetch_add(1, Ordering::SeqCst);
                     shared.emit_progress(true);
+
+                    // Pause between tracks: the API throttles a burst of requests.
+                    // Skipped after the last track and cut short by a stop request,
+                    // so finishing never hangs on a long delay.
+                    let more = next.load(Ordering::SeqCst) < tracks.len();
+                    if more && shared.settings.delay > 0 && !shared.control.is_cancelled() {
+                        let delay = std::time::Duration::from_secs(shared.settings.delay);
+                        tokio::time::sleep(delay).await;
+                    }
                 }
             }));
         }
@@ -455,9 +470,31 @@ impl Job {
             let _ = handle.await;
         }
 
+        let final_progress = JobProgress {
+            done: shared.counters.done.load(Ordering::SeqCst),
+            total: shared.total.load(Ordering::SeqCst),
+            ok: shared.counters.ok.load(Ordering::SeqCst),
+            failed: shared.counters.failed.load(Ordering::SeqCst),
+            skipped: shared.counters.skipped.load(Ordering::SeqCst),
+            running: false,
+            stopping: false,
+            cancelled: shared.control.is_cancelled(),
+            error: false,
+        };
+        let _ = shared.app.emit(EVENT_FINISHED, final_progress.clone());
+
+        // Maintenance sweep of the whole folder runs after the job is reported
+        // finished: it walks every file with ffprobe and must neither block the
+        // async runtime nor delay the "done" the user is waiting for.
         if shared.settings.extract_flac && ffmpeg::available() {
-            shared.log("info", "Проверяю скачанные файлы на настоящий FLAC…");
-            let stats = ffmpeg::post_process(&target_dir, shared.settings.quarantine_lossy);
+            shared.log("info", "Проверяю папку на настоящий FLAC…");
+            let root = target_dir.clone();
+            let quarantine_lossy = shared.settings.quarantine_lossy;
+            let stats = tauri::async_runtime::spawn_blocking(move || {
+                ffmpeg::post_process(&root, quarantine_lossy)
+            })
+            .await
+            .unwrap_or_default();
             if stats.converted > 0 {
                 shared.log("ok", format!("Извлечено FLAC из .m4a: {}", stats.converted));
             }
@@ -472,17 +509,31 @@ impl Job {
             }
         }
 
-        let final_progress = JobProgress {
-            done: shared.counters.done.load(Ordering::SeqCst),
-            total: shared.total.load(Ordering::SeqCst),
-            ok: shared.counters.ok.load(Ordering::SeqCst),
-            failed: shared.counters.failed.load(Ordering::SeqCst),
-            skipped: shared.counters.skipped.load(Ordering::SeqCst),
-            running: false,
-            stopping: false,
-            cancelled: shared.control.is_cancelled(),
-        };
-        let _ = shared.app.emit(EVENT_FINISHED, final_progress.clone());
         Ok(final_progress)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identical_names_get_distinct_paths() {
+        let mut claimed = std::collections::HashSet::new();
+        let first = claim_path(&mut claimed, PathBuf::from("/music/song.m4a"));
+        let second = claim_path(&mut claimed, PathBuf::from("/music/song.m4a"));
+        let third = claim_path(&mut claimed, PathBuf::from("/music/song.m4a"));
+        assert_eq!(first, PathBuf::from("/music/song.m4a"));
+        assert_eq!(second, PathBuf::from("/music/song (2).m4a"));
+        assert_eq!(third, PathBuf::from("/music/song (3).m4a"));
+    }
+
+    #[test]
+    fn claim_keeps_the_extension() {
+        let mut claimed = std::collections::HashSet::new();
+        claim_path(&mut claimed, PathBuf::from("a/track.flac"));
+        let second = claim_path(&mut claimed, PathBuf::from("a/track.flac"));
+        assert_eq!(second.extension().and_then(|e| e.to_str()), Some("flac"));
+        assert_eq!(second.file_stem().and_then(|s| s.to_str()), Some("track (2)"));
     }
 }

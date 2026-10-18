@@ -105,15 +105,28 @@ pub async fn check_token(state: State<'_, AppState>, token: String) -> Result<Ac
 }
 
 #[tauri::command]
-pub async fn resolve_source(state: State<'_, AppState>, url: String) -> Result<SourceInfo, String> {
+pub async fn resolve_source(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<SourceInfo, String> {
     let client = state.client().map_err(|error| format!("{error:#}"))?;
     let settings = state.settings();
+    // An artist link fetches one album at a time, which takes minutes on a big
+    // catalogue; the UI needs to see that it is moving, not frozen.
+    let progress_app = app.clone();
     api::resolve_source(
         &client,
         &url,
         settings.only_music,
         settings.stick_to_artist,
-        |_, _| {},
+        move |done, total| {
+            let _ = tauri::Emitter::emit(
+                &progress_app,
+                "job://resolve",
+                ResolveProgress { done, total },
+            );
+        },
     )
     .await
     .map_err(|error| format!("{error:#}"))
@@ -176,6 +189,7 @@ pub fn start_download(
                     running: false,
                     stopping: false,
                     cancelled: false,
+                    error: true,
                 },
             );
         }
@@ -238,8 +252,7 @@ pub async fn post_process(state: State<'_, AppState>) -> Result<ffmpeg::PostProc
 }
 
 #[tauri::command]
-pub async fn probe_lossless(state: State<'_, AppState>, track_id: Option<String>) -> Result<AccountInfo, String> {
+pub async fn probe_lossless(state: State<'_, AppState>) -> Result<AccountInfo, String> {
     let client = state.client().map_err(|error| format!("{error:#}"))?;
-    let _ = track_id;
     api::check_token(&client).await.map_err(|error| format!("{error:#}"))
 }

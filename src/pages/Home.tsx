@@ -6,6 +6,7 @@ export default function Home() {
   const source = useApp((state) => state.source);
   const selected = useApp((state) => state.selected);
   const loading = useApp((state) => state.loadingSource);
+  const resolveProgress = useApp((state) => state.resolveProgress);
   const downloading = useApp((state) => state.downloading);
   const settings = useApp((state) => state.settings);
   const resolve = useApp((state) => state.resolve);
@@ -110,7 +111,11 @@ export default function Home() {
             <div className="selection-head">
               <div className="titles">
                 <h2>Загружаю список…</h2>
-                <span className="sub">Это может занять несколько секунд</span>
+                <span className="sub">
+                  {resolveProgress && resolveProgress.total > 0
+                    ? `Альбом ${resolveProgress.done} из ${resolveProgress.total}`
+                    : "Это может занять несколько секунд"}
+                </span>
               </div>
             </div>
             {[0, 1, 2, 3, 4, 5].map((key) => (

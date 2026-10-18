@@ -17,6 +17,12 @@ fn version_tuple(text: &str) -> Vec<u64> {
 }
 
 fn newer(latest: &str, installed: &str) -> bool {
+    // BtbN publishes ffmpeg as date-stamped `autobuild-YYYY-MM-DD-…` tags. Those
+    // digits are a date, not a version: comparing them with an installed `9.0.2`
+    // reports an update on every single launch.
+    if latest.trim().to_ascii_lowercase().starts_with("autobuild") {
+        return false;
+    }
     version_tuple(latest) > version_tuple(installed)
 }
 
@@ -124,13 +130,22 @@ pub async fn check_updates(app_version: &str, repo: &str) -> Vec<UpdateEntry> {
         });
     } else {
         match latest_ffmpeg_tag().await {
-            Some(tag) => entries.push(UpdateEntry {
-                name: "ffmpeg".into(),
-                installed: installed.clone(),
-                latest: tag.clone(),
-                newer: newer(&tag, &installed),
-                detail: "github.com/BtbN/FFmpeg-Builds".into(),
-            }),
+            Some(tag) => {
+                // The BtbN tags are dates, so "newer" is unknowable here; say so
+                // instead of guessing and nagging.
+                let dated = tag.to_ascii_lowercase().starts_with("autobuild");
+                entries.push(UpdateEntry {
+                    name: "ffmpeg".into(),
+                    installed: installed.clone(),
+                    latest: tag.clone(),
+                    newer: newer(&tag, &installed),
+                    detail: if dated {
+                        "github.com/BtbN/FFmpeg-Builds · сборки датируются, автосравнение недоступно".into()
+                    } else {
+                        "github.com/BtbN/FFmpeg-Builds".into()
+                    },
+                })
+            }
             None => entries.push(UpdateEntry {
                 name: "ffmpeg".into(),
                 installed,
@@ -160,5 +175,14 @@ mod tests {
     fn version_tuple_ignores_prefixes() {
         assert_eq!(version_tuple("autobuild-2026-01-01-12-00"), vec![2026, 1, 1, 12]);
         assert_eq!(version_tuple("n7.1"), vec![7, 1]);
+    }
+
+    /// The ffmpeg check used to claim an update on every launch, because the
+    /// BtbN tag's year beats any real version number.
+    #[test]
+    fn autobuild_tag_is_not_newer_than_a_real_version() {
+        assert!(!newer("autobuild-2026-10-01-12-00", "9.0.2"));
+        assert!(!newer("AUTOBUILD-2026-10-01-12-00", "7.1"));
+        assert!(newer("9.0.3", "9.0.2"));
     }
 }

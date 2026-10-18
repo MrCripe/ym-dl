@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { api, type EnvironmentInfo, type Settings, type UpdateEntry } from "../lib/api";
+import { api, type EnvironmentInfo, type UpdateEntry } from "../lib/api";
 import { useApp } from "../lib/store";
 import { Badge, Button, Icon, Segmented, Slider, Switch, TextField } from "../components/ui";
 
@@ -14,35 +14,24 @@ const ACCENTS: { value: string; label: string; color: string }[] = [
 ];
 
 export default function SettingsPage() {
-  const settings = useApp((state) => state.settings);
-  const save = useApp((state) => state.setSettings);
+  const draft = useApp((state) => state.settingsDraft);
+  const dirty = useApp((state) => state.settingsDirty);
+  const patch = useApp((state) => state.patchSettings);
+  const persist = useApp((state) => state.saveSettingsDraft);
   const toast = useApp((state) => state.toast);
   const account = useApp((state) => state.account);
 
-  const [draft, setDraft] = useState<Settings | null>(settings);
   const [env, setEnv] = useState<EnvironmentInfo | null>(null);
   const [updates, setUpdates] = useState<UpdateEntry[] | null>(null);
   const [checking, setChecking] = useState(false);
-  const [dirty, setDirty] = useState(false);
-
-  useEffect(() => {
-    setDraft(settings);
-  }, [settings]);
 
   useEffect(() => {
     api.environment().then(setEnv).catch(() => undefined);
   }, []);
 
-  const patch = (values: Partial<Settings>) => {
-    setDraft((current) => (current ? { ...current, ...values } : current));
-    setDirty(true);
-  };
-
-  const persist = async () => {
-    if (!draft) return;
+  const save = async () => {
     try {
-      await save(draft);
-      setDirty(false);
+      await persist();
       toast("Настройки сохранены", "success");
     } catch (error) {
       toast(String((error as Error).message), "error");
@@ -73,7 +62,7 @@ export default function SettingsPage() {
           </div>
           <div className="row">
             {dirty ? <Badge tone="warning">есть изменения</Badge> : null}
-            <Button icon="save" onClick={persist} disabled={!dirty}>
+            <Button icon="save" onClick={save} disabled={!dirty}>
               Сохранить
             </Button>
           </div>
@@ -107,6 +96,13 @@ export default function SettingsPage() {
               )
             }
           />
+          {account?.expires ? (
+            <Row
+              name="Подписка действует до"
+              desc={account.productId ? `Продукт: ${account.productId}` : undefined}
+              control={<span className="value-chip">{account.expires}</span>}
+            />
+          ) : null}
           <Row
             name="Lossless"
             desc={
@@ -356,13 +352,13 @@ export default function SettingsPage() {
           />
           <Row
             name="Попыток при ошибке"
-            desc="0 — бесконечно"
+            desc="Сколько раз повторять запрос, прежде чем сдаться (максимум 6)"
             control={
               <div className="control wide" style={{ display: "flex", gap: 12 }}>
                 <Slider
                   value={draft.tries}
-                  min={0}
-                  max={50}
+                  min={1}
+                  max={6}
                   label="Попытки"
                   onChange={(value) => patch({ tries: value })}
                 />

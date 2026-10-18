@@ -335,6 +335,16 @@ pub struct JobProgress {
     pub running: bool,
     pub stopping: bool,
     pub cancelled: bool,
+    /// The job itself blew up (as opposed to individual tracks failing), so the
+    /// UI must not report a clean finish.
+    pub error: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveProgress {
+    pub done: usize,
+    pub total: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]

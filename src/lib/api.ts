@@ -87,6 +87,7 @@ export type JobProgress = {
   running: boolean;
   stopping: boolean;
   cancelled: boolean;
+  error: boolean;
 };
 
 export type JobLog = { level: "info" | "ok" | "warn" | "error"; message: string };
@@ -130,8 +131,7 @@ export const api = {
     call<UpdateEntry[]>("check_updates", { appVersion, repo }),
   environment: () => call<EnvironmentInfo>("environment"),
   postProcess: () => call<PostProcessStats>("post_process"),
-  probeLossless: (trackId?: string) =>
-    call<AccountInfo>("probe_lossless", { trackId: trackId ?? null }),
+  probeLossless: () => call<AccountInfo>("probe_lossless"),
 };
 
 export type JobEvents = {
@@ -139,6 +139,7 @@ export type JobEvents = {
   onProgress: (progress: JobProgress) => void;
   onLog: (log: JobLog) => void;
   onFinished: (progress: JobProgress) => void;
+  onResolve: (progress: { done: number; total: number }) => void;
 };
 
 export async function subscribe(handlers: JobEvents): Promise<UnlistenFn> {
@@ -147,6 +148,9 @@ export async function subscribe(handlers: JobEvents): Promise<UnlistenFn> {
     listen<JobProgress>("job://progress", (event) => handlers.onProgress(event.payload)),
     listen<JobLog>("job://log", (event) => handlers.onLog(event.payload)),
     listen<JobProgress>("job://finished", (event) => handlers.onFinished(event.payload)),
+    listen<{ done: number; total: number }>("job://resolve", (event) =>
+      handlers.onResolve(event.payload),
+    ),
   ]);
   return () => unlisteners.forEach((off) => off());
 }

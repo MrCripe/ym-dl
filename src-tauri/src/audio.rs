@@ -16,15 +16,17 @@ type Aes128Ctr = ctr::Ctr128BE<Aes128>;
 const MAX_NAME_BYTES: usize = 250;
 
 /// Yandex encrypts audio with AES-128-CTR using a 12-byte zero nonce.
-pub fn decrypt(data: &[u8], key_hex: &str) -> anyhow::Result<Vec<u8>> {
+///
+/// Takes the buffer by value and decrypts in place: a lossless track is tens of
+/// megabytes and a copy would double the peak memory of every worker.
+pub fn decrypt(mut data: Vec<u8>, key_hex: &str) -> anyhow::Result<Vec<u8>> {
     let key = hex_to_bytes(key_hex)?;
     if key.len() != 16 {
         anyhow::bail!("неверная длина ключа расшифровки: {} байт", key.len());
     }
-    let mut buffer = data.to_vec();
     let mut cipher = Aes128Ctr::new(key.as_slice().into(), &[0u8; 16].into());
-    cipher.apply_keystream(&mut buffer);
-    Ok(buffer)
+    cipher.apply_keystream(&mut data);
+    Ok(data)
 }
 
 fn hex_to_bytes(text: &str) -> anyhow::Result<Vec<u8>> {
@@ -302,9 +304,9 @@ mod tests {
     fn decrypt_is_symmetric() {
         let key = "00112233445566778899aabbccddeeff";
         let plain = b"hello yandex music".to_vec();
-        let encrypted = decrypt(&plain, key).unwrap();
+        let encrypted = decrypt(plain.clone(), key).unwrap();
         assert_ne!(encrypted, plain);
-        assert_eq!(decrypt(&encrypted, key).unwrap(), plain);
+        assert_eq!(decrypt(encrypted, key).unwrap(), plain);
     }
 
     #[test]

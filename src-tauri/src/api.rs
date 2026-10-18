@@ -4,8 +4,8 @@
 //! playlists, albums, artists, the signed `get-file-info` call that yields
 //! audio URLs, and lyrics.
 //!
-//! The API throttles aggressively, so every call goes through `request()` which
-//! honours `Retry-After` and backs off exponentially on 429/5xx.
+//! The API throttles aggressively, so every call goes through `request()`, which
+//! retries 429/5xx with an exponential backoff capped by `settings.tries`.
 
 use crate::model::*;
 use crate::sign;
@@ -135,22 +135,6 @@ impl Client {
     }
 
     pub async fn likes_tracks(&self, user: Option<&str>) -> Result<Vec<String>> {
-        // The server nests the list one level deep: `result.library.tracks`.
-        #[derive(serde::Deserialize)]
-        struct Response {
-            #[serde(default)]
-            library: Library,
-        }
-        #[derive(serde::Deserialize, Default)]
-        struct Library {
-            #[serde(default)]
-            tracks: Vec<ShortTrack>,
-        }
-        #[derive(serde::Deserialize)]
-        struct ShortTrack {
-            #[serde(default)]
-            id: Value,
-        }
         let path = match user.map(str::trim).filter(|value| !value.is_empty()) {
             Some(name) => format!("/users/{name}/likes/tracks"),
             // `0` is not a user id: the server only understands a real uid here.
@@ -165,7 +149,7 @@ impl Client {
                 format!("/users/{uid}/likes/tracks")
             }
         };
-        let response: Response = self.get(&path, &[]).await?;
+        let response: LikesResponse = self.get(&path, &[]).await?;
         Ok(response
             .library
             .tracks
@@ -276,15 +260,20 @@ impl Client {
     /// and returns `false` to abort, which is how a stop request interrupts a
     /// transfer that is already in flight.
     ///
-    /// A dropped connection restarts the transfer from zero: the server has no
-    /// range support for these signed URLs, so there is nothing to resume.
+    /// The server hands out several mirror URLs for one file and has no range
+    /// support on them, so a retry starts from zero on the next mirror instead
+    /// of hammering a host that just failed.
     pub async fn audio_stream(
         &self,
-        url: &str,
+        urls: &[String],
         mut on_chunk: impl FnMut(u64, u64) -> bool,
     ) -> Result<Vec<u8>> {
+        if urls.is_empty() {
+            bail!("сервер не вернул ссылку на файл");
+        }
         let mut last_error = None;
         for attempt in 1..=self.attempts() {
+            let url = &urls[(attempt as usize - 1) % urls.len()];
             match self.stream_once(url, &mut on_chunk).await {
                 Ok(Some(body)) => return Ok(body),
                 Ok(None) => bail!("загрузка остановлена"),
@@ -301,6 +290,11 @@ impl Client {
     }
 
     /// One transfer attempt. `Ok(None)` means the caller asked to stop.
+    ///
+    /// ponytail: the whole track is buffered in memory; a lossless file is tens
+    /// of megabytes and up to six workers run at once. Streaming straight to the
+    /// `.part` file (CTR allows chunk-wise decryption) is the upgrade path if
+    /// memory ever becomes the bottleneck.
     async fn stream_once(
         &self,
         url: &str,
@@ -337,8 +331,28 @@ impl Client {
 
 }
 
-pub fn value_to_id(value: &Value) -> Option<String> {
-    match value {
+/// `/users/{uid}/likes/tracks` nests the list one level deep:
+/// `result.library.tracks`. Declared at module scope so the test exercises the
+/// same types the request uses instead of a copy.
+#[derive(serde::Deserialize, Default)]
+struct LikesResponse {
+    #[serde(default)]
+    library: LikesLibrary,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct LikesLibrary {
+    #[serde(default)]
+    tracks: Vec<LikesTrack>,
+}
+
+#[derive(serde::Deserialize)]
+struct LikesTrack {
+    #[serde(default)]
+    id: Value,
+}
+
+pub fn value_to_id(value: &Value) -> Option<String> {    match value {
         Value::String(text) if !text.is_empty() => Some(text.clone()),
         Value::Number(number) => Some(number.to_string()),
         _ => None,
@@ -751,25 +765,12 @@ mod tests {
 
     #[test]
     fn likes_are_nested_under_library() {
+        // Uses the production `LikesResponse`, so reverting the nesting in
+        // `likes_tracks` breaks this test.
         let json = serde_json::json!({
             "library": { "tracks": [{ "id": "53404" }, { "id": 42 }] }
         });
-        #[derive(serde::Deserialize)]
-        struct Response {
-            #[serde(default)]
-            library: Library,
-        }
-        #[derive(serde::Deserialize, Default)]
-        struct Library {
-            #[serde(default)]
-            tracks: Vec<ShortTrack>,
-        }
-        #[derive(serde::Deserialize)]
-        struct ShortTrack {
-            #[serde(default)]
-            id: Value,
-        }
-        let response: Response = serde_json::from_value(json).unwrap();
+        let response: LikesResponse = serde_json::from_value(json).unwrap();
         let ids: Vec<String> = response
             .library
             .tracks
@@ -777,6 +778,12 @@ mod tests {
             .filter_map(|track| value_to_id(&track.id))
             .collect();
         assert_eq!(ids, vec!["53404".to_string(), "42".to_string()]);
+    }
+
+    #[test]
+    fn likes_tolerate_a_missing_library() {
+        let response: LikesResponse = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(response.library.tracks.is_empty());
     }
 
     #[test]

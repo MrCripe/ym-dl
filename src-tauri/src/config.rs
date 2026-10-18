@@ -60,7 +60,7 @@ impl Default for Settings {
             unsafe_path: false,
             delay: 0,
             timeout: 20,
-            tries: 20,
+            tries: 6,
             retry_delay: 5,
             extract_flac: true,
             quarantine_lossy: false,
@@ -88,6 +88,11 @@ impl Settings {
         self.timeout = self.timeout.max(1);
         self.cover_resolution = self.cover_resolution.max(100);
         self.concurrent = self.concurrent.clamp(1, 6);
+        // The config file is hand-editable, so every number that drives a wait
+        // loop is bounded here: `delay: 999999` would otherwise hang a job.
+        self.delay = self.delay.min(300);
+        self.retry_delay = self.retry_delay.min(120);
+        self.tries = self.tries.min(6);
         if self.path_pattern.trim().is_empty() {
             self.path_pattern = "#track-artist - #title".into();
         }
@@ -198,6 +203,9 @@ mod tests {
             cover_resolution: 10,
             concurrent: 99,
             compatibility_level: 7,
+            delay: 999_999,
+            retry_delay: 99_999,
+            tries: 5_000,
             ..Settings::default()
         };
         settings.sanitize();
@@ -208,6 +216,10 @@ mod tests {
         assert_eq!(settings.cover_resolution, 100);
         assert_eq!(settings.concurrent, 6);
         assert_eq!(settings.compatibility_level, 1);
+        // A hand-edited config must not be able to hang a job for days.
+        assert_eq!(settings.delay, 300);
+        assert_eq!(settings.retry_delay, 120);
+        assert_eq!(settings.tries, 6);
     }
 
     #[test]

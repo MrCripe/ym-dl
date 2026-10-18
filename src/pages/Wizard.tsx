@@ -171,6 +171,11 @@ function AccountStatus({ account }: { account: AccountInfo }) {
           применяется к аккаунту.
         </p>
       ) : null}
+      {account.note ? (
+        <p className="md-body-sm muted" style={{ margin: 0 }}>
+          {account.note}
+        </p>
+      ) : null}
     </div>
   );
 }

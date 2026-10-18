@@ -11,11 +11,15 @@ type State = {
   initError: string;
   needsToken: boolean;
   settings: Settings | null;
+  /** Unsaved edits. Lives in the store so leaving the page does not drop them. */
+  settingsDraft: Settings | null;
+  settingsDirty: boolean;
   account: AccountInfo | null;
   page: Page;
   source: SourceInfo | null;
   selected: Set<string>;
   loadingSource: boolean;
+  resolveProgress: { done: number; total: number } | null;
   downloading: boolean;
   progress: JobProgress | null;
   tracks: TrackState[];
@@ -25,6 +29,8 @@ type State = {
   init: () => Promise<void>;
   setPage: (page: Page) => void;
   setSettings: (settings: Settings) => Promise<void>;
+  patchSettings: (values: Partial<Settings>) => void;
+  saveSettingsDraft: () => Promise<void>;
   setAccount: (account: AccountInfo | null) => void;
   finishWizard: (account: AccountInfo) => Promise<void>;
   resolve: (url: string) => Promise<void>;
@@ -44,11 +50,14 @@ export const useApp = create<State>((set, get) => ({
   initError: "",
   needsToken: true,
   settings: null,
+  settingsDraft: null,
+  settingsDirty: false,
   account: null,
   page: "home",
   source: null,
   selected: new Set<string>(),
   loadingSource: false,
+  resolveProgress: null,
   downloading: false,
   progress: null,
   tracks: [],
@@ -56,6 +65,36 @@ export const useApp = create<State>((set, get) => ({
   toasts: [],
 
   init: async () => {
+    // Registered before anything can fail: the download page must hear the job
+    // even when reading the settings below goes wrong.
+    await subscribe({
+      onTrack: (state) =>
+        set((current) => {
+          const tracks = [...current.tracks];
+          tracks[state.index] = state;
+          return { tracks };
+        }),
+      onProgress: (progress) => set({ progress, downloading: progress.running }),
+      onResolve: (resolveProgress) => set({ resolveProgress }),
+      onLog: (log) =>
+        set((current) => ({
+          logs: [...current.logs.slice(-400), { ...log, time: Date.now() }],
+        })),
+      onFinished: (progress) => {
+        set({ progress, downloading: false });
+        get().toast(
+          progress.error
+            ? "Загрузка прервана — причина в логе"
+            : progress.cancelled
+              ? "Загрузка остановлена"
+              : `Готово: ${progress.ok} скачано, ${progress.skipped} пропущено, ${progress.failed} с ошибкой`,
+          progress.error || progress.failed > 0 ? "error" : progress.cancelled ? "info" : "success",
+          "Загрузки",
+          "downloads",
+        );
+      },
+    });
+
     let settings: Settings;
     let hasToken: boolean;
     try {
@@ -65,7 +104,7 @@ export const useApp = create<State>((set, get) => ({
       set({ ready: true, needsToken: false, initError: String((error as Error).message) });
       return;
     }
-    set({ settings, needsToken: !hasToken, ready: true });
+    set({ settings, settingsDraft: settings, needsToken: !hasToken, ready: true });
 
     if (hasToken) {
       api
@@ -98,56 +137,46 @@ export const useApp = create<State>((set, get) => ({
         })
         .catch(() => undefined);
     }
-
-    await subscribe({
-      onTrack: (state) =>
-        set((current) => {
-          const tracks = [...current.tracks];
-          tracks[state.index] = state;
-          return { tracks };
-        }),
-      onProgress: (progress) => set({ progress, downloading: progress.running }),
-      onLog: (log) =>
-        set((current) => ({
-          logs: [...current.logs.slice(-400), { ...log, time: Date.now() }],
-        })),
-      onFinished: (progress) => {
-        set({ progress, downloading: false });
-        get().toast(
-          progress.cancelled
-            ? "Загрузка остановлена"
-            : `Готово: ${progress.ok} скачано, ${progress.skipped} пропущено, ${progress.failed} с ошибкой`,
-          progress.failed > 0 ? "error" : "success",
-          "Загрузки",
-          "downloads",
-        );
-      },
-    });
   },
 
   setPage: (page) => set({ page }),
 
   setSettings: async (settings) => {
     const saved = await api.saveSettings(settings);
-    set({ settings: saved });
+    set({ settings: saved, settingsDraft: saved, settingsDirty: false });
   },
 
   setAccount: (account) => set({ account }),
 
+  patchSettings: (values) =>
+    set((current) => {
+      const base = current.settingsDraft ?? current.settings;
+      if (!base) return {};
+      return { settingsDraft: { ...base, ...values }, settingsDirty: true };
+    }),
+
+  saveSettingsDraft: async () => {
+    const draft = get().settingsDraft ?? get().settings;
+    if (!draft) return;
+    const saved = await api.saveSettings(draft);
+    set({ settings: saved, settingsDraft: saved, settingsDirty: false });
+  },
+
   finishWizard: async (account) => {
     set({ account, needsToken: false });
     const settings = await api.settings();
-    set({ settings });
+    set({ settings, settingsDraft: settings });
   },
 
   resolve: async (url) => {
-    set({ loadingSource: true });
+    set({ loadingSource: true, resolveProgress: null });
     try {
       const source = await api.resolve(url);
       set({
         source,
         selected: new Set(source.tracks.filter((track) => track.available).map((track) => track.id)),
         loadingSource: false,
+        resolveProgress: null,
       });
       // Remember the link so the next launch starts where the user left off.
       const { settings } = get();
@@ -158,7 +187,7 @@ export const useApp = create<State>((set, get) => ({
         );
       }
     } catch (error) {
-      set({ loadingSource: false });
+      set({ loadingSource: false, resolveProgress: null });
       get().toast(String((error as Error).message), "error");
     }
   },
@@ -213,7 +242,13 @@ export const useApp = create<State>((set, get) => ({
   },
 
   stop: async () => {
-    await api.stop();
+    const accepted = await api.stop();
+    if (!accepted) {
+      // Nothing was running: saying "stopping" would be a lie.
+      set({ downloading: false });
+      get().toast("Загрузка уже не идёт", "info");
+      return;
+    }
     get().toast("Останавливаю после текущего трека…");
   },
 
