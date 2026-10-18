@@ -1,0 +1,387 @@
+/* Base layout, typography and shared Material 3 surfaces. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--on-surface);
+  background: var(--surface);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+input,
+textarea {
+  user-select: text;
+}
+
+::selection {
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--outline-variant);
+  border-radius: var(--radius-full);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--outline);
+  background-clip: content-box;
+}
+
+/* --- typography roles ------------------------------------------------- */
+
+.md-display {
+  font-size: 45px;
+  line-height: 52px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.md-headline {
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: 400;
+}
+
+.md-title-lg {
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 500;
+}
+
+.md-title {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500;
+  letter-spacing: 0.15px;
+}
+
+.md-title-sm {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  letter-spacing: 0.1px;
+}
+
+.md-body {
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: 0.25px;
+}
+
+.md-body-sm {
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: 0.4px;
+}
+
+.md-label {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  letter-spacing: 0.1px;
+}
+
+.md-label-sm {
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+}
+
+.muted {
+  color: var(--on-surface-variant);
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- app shell -------------------------------------------------------- */
+
+.app-shell {
+  display: flex;
+  height: 100%;
+  background: var(--surface);
+  position: relative;
+  overflow: hidden;
+}
+
+.app-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  padding-top: 44px;
+}
+
+.page {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 32px 32px;
+  scroll-behavior: smooth;
+}
+
+.page-narrow {
+  max-width: 1080px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.page-header {
+  padding: 20px 0 8px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.page-header h1 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: 400;
+}
+
+.page-header p {
+  margin: 4px 0 0;
+  color: var(--on-surface-variant);
+}
+
+/* --- title bar (custom window chrome) --------------------------------- */
+
+.titlebar {
+  height: 44px;
+  flex: 0 0 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 16px;
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.titlebar .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  color: var(--on-surface-variant);
+}
+
+.titlebar .brand-glyph {
+  font-size: 18px;
+  color: var(--primary);
+}
+
+.titlebar .spacer {
+  flex: 1;
+}
+
+.window-button {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+  width: 40px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--on-surface-variant);
+  cursor: pointer;
+  transition: background var(--dur-short2) var(--ease-standard),
+    color var(--dur-short2) var(--ease-standard);
+}
+
+.window-button:hover {
+  background: color-mix(in srgb, var(--on-surface) 8%, transparent);
+  color: var(--on-surface);
+}
+
+.window-button.close:hover {
+  background: var(--error);
+  color: var(--on-error);
+}
+
+.window-button .material-symbols-rounded {
+  font-size: 18px;
+}
+
+/* --- shared surfaces -------------------------------------------------- */
+
+.surface-card {
+  background: var(--surface-container);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+}
+
+.surface-card.low {
+  background: var(--surface-low);
+}
+
+.surface-card.outlined {
+  background: var(--surface);
+  border: 1px solid var(--outline-variant);
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 24px 0 12px;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.section-title .material-symbols-rounded {
+  font-size: 20px;
+  color: var(--primary);
+}
+
+.divider {
+  height: 1px;
+  background: var(--outline-variant);
+  opacity: 0.6;
+  border: 0;
+  margin: 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.row.between {
+  justify-content: space-between;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+/* --- motion helpers --------------------------------------------------- */
+
+@keyframes fade-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -220% 0;
+  }
+  100% {
+    background-position: 220% 0;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 45%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 12px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.animate-in {
+  animation: fade-slide-in var(--dur-medium2) var(--ease-emphasized) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}

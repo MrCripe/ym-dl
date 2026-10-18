@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.venv/
+.wvdata/
+src-tauri/target/
+src-tauri/gen/
+_extract/msr*.ttf
+_extract/*.log
+*.log
+.DS_Store
+Thumbs.db

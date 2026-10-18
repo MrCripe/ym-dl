@@ -1,0 +1,439 @@
+//! Download engine.
+//!
+//! A job resolves the selected track ids, then downloads them with a bounded
+//! number of parallel workers. Per-track state, overall progress and log lines
+//! are pushed to the UI as Tauri events; stopping sets a flag that is checked
+//! before every track and inside every streamed chunk.
+
+use crate::api::{self, Client};
+use crate::audio;
+use crate::config::Settings;
+use crate::ffmpeg;
+use crate::model::{JobProgress, Track, TrackState};
+use anyhow::Result;
+use serde::Serialize;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use tauri::{AppHandle, Emitter};
+
+pub const EVENT_TRACK: &str = "job://track";
+pub const EVENT_PROGRESS: &str = "job://progress";
+pub const EVENT_LOG: &str = "job://log";
+pub const EVENT_FINISHED: &str = "job://finished";
+
+const BATCH: usize = 100;
+const PROGRESS_INTERVAL_MS: u128 = 120;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobLog {
+    pub level: String,
+    pub message: String,
+}
+
+#[derive(Clone, Default)]
+pub struct JobControl {
+    cancel: Arc<AtomicBool>,
+}
+
+impl JobControl {
+    pub fn stop(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Default)]
+struct Counters {
+    done: AtomicUsize,
+    ok: AtomicUsize,
+    failed: AtomicUsize,
+    skipped: AtomicUsize,
+}
+
+struct Shared {
+    app: AppHandle,
+    client: Client,
+    settings: Settings,
+    control: JobControl,
+    counters: Counters,
+    states: Mutex<Vec<TrackState>>,
+    total: AtomicUsize,
+}
+
+impl Shared {
+    fn emit_progress(&self, running: bool) -> JobProgress {
+        let progress = JobProgress {
+            done: self.counters.done.load(Ordering::SeqCst),
+            total: self.total.load(Ordering::SeqCst),
+            ok: self.counters.ok.load(Ordering::SeqCst),
+            failed: self.counters.failed.load(Ordering::SeqCst),
+            skipped: self.counters.skipped.load(Ordering::SeqCst),
+            running,
+            stopping: self.control.is_cancelled(),
+            cancelled: false,
+        };
+        let _ = self.app.emit(EVENT_PROGRESS, progress.clone());
+        progress
+    }
+
+    fn log(&self, level: &str, message: impl Into<String>) {
+        let _ = self.app.emit(
+            EVENT_LOG,
+            JobLog { level: level.to_string(), message: message.into() },
+        );
+    }
+
+    fn update(&self, index: usize, mutate: impl FnOnce(&mut TrackState)) {
+        let snapshot = {
+            let Ok(mut states) = self.states.lock() else { return };
+            let Some(state) = states.get_mut(index) else { return };
+            mutate(state);
+            state.clone()
+        };
+        let _ = self.app.emit(EVENT_TRACK, snapshot);
+    }
+
+    fn settle(&self, index: usize, status: &str, message: &str, path: &str) {
+        self.update(index, |state| {
+            state.status = status.to_string();
+            state.message = message.to_string();
+            if !path.is_empty() {
+                state.path = path.to_string();
+            }
+        });
+        match status {
+            "ok" => {
+                self.counters.ok.fetch_add(1, Ordering::SeqCst);
+            }
+            "skipped" => {
+                self.counters.skipped.fetch_add(1, Ordering::SeqCst);
+            }
+            "failed" => {
+                self.counters.failed.fetch_add(1, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+    }
+
+    async fn download_one(self: &Arc<Self>, index: usize, track: &Track, target_dir: &Path) {
+        if !track.available {
+            self.settle(index, "failed", "трек недоступен в регионе", "");
+            return;
+        }
+        let item = api::track_item(track);
+        let base = target_dir.join(audio::base_path(
+            &self.settings.path_pattern,
+            track,
+            self.settings.unsafe_path,
+        ));
+
+        if self.settings.skip_existing
+            && [".mp3", ".flac", ".m4a"]
+                .iter()
+                .any(|suffix| PathBuf::from(format!("{}{suffix}", base.display())).is_file())
+        {
+            self.settle(index, "skipped", "уже скачан", &base.display().to_string());
+            return;
+        }
+
+        let quality = match self.settings.quality {
+            0 => "lq",
+            1 => "nq",
+            _ => "lossless",
+        };
+        let info = match self.client.download_info(&item.id, quality).await {
+            Ok(info) => info,
+            Err(error) => {
+                self.settle(index, "failed", &format!("{error:#}"), "");
+                return;
+            }
+        };
+        let (container, codec) = audio::container_name(&info.codec);
+        let extension = audio::extension_for(container, codec);
+        let mut final_path = PathBuf::from(format!("{}{extension}", base.display()));
+
+        if let Some(parent) = final_path.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                self.settle(index, "failed", &format!("не удалось создать папку: {error}"), "");
+                return;
+            }
+        }
+
+        self.update(index, |state| {
+            state.codec = codec.to_string();
+            state.bitrate = info.bitrate;
+            state.status = "downloading".into();
+        });
+
+        let Some(url) = info.urls.first().cloned() else {
+            self.settle(index, "failed", "сервер не вернул ссылку на файл", "");
+            return;
+        };
+
+        let shared = self.clone();
+        let mut last_emit = Instant::now();
+        let body = shared
+            .client
+            .audio_stream(&url, |done, total| {
+                if last_emit.elapsed().as_millis() >= PROGRESS_INTERVAL_MS {
+                    last_emit = Instant::now();
+                    shared.update(index, |state| {
+                        state.done_bytes = done;
+                        state.total_bytes = total;
+                    });
+                }
+                !shared.control.is_cancelled()
+            })
+            .await;
+
+        let body = match body {
+            Ok(body) => body,
+            Err(error) => {
+                if self.control.is_cancelled() {
+                    self.settle(index, "cancelled", "остановлено", "");
+                } else {
+                    self.settle(index, "failed", &format!("{error:#}"), "");
+                }
+                return;
+            }
+        };
+
+        let bytes = match info.key.as_deref().filter(|key| !key.is_empty()) {
+            Some(key) => match audio::decrypt(&body, key) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    self.settle(index, "failed", &format!("расшифровка не удалась: {error}"), "");
+                    return;
+                }
+            },
+            None => body,
+        };
+
+        let temp = final_path.with_extension(format!("{}.part", extension.trim_start_matches('.')));
+        if let Err(error) = std::fs::write(&temp, &bytes) {
+            self.settle(index, "failed", &format!("не удалось записать файл: {error}"), "");
+            return;
+        }
+
+        if let Err(error) = self.tag(track, &temp, &item.id).await {
+            self.log("warn", format!("Теги не записались для «{}»: {error:#}", item.title));
+        }
+        if let Err(error) = std::fs::rename(&temp, &final_path) {
+            let _ = std::fs::remove_file(&temp);
+            self.settle(index, "failed", &format!("не удалось переименовать файл: {error}"), "");
+            return;
+        }
+
+        if self.settings.extract_flac && codec == "FLAC" && container == "MP4" && ffmpeg::available()
+        {
+            match ffmpeg::extract_flac(&final_path).as_str() {
+                "converted" => {
+                    ffmpeg::quarantine(&final_path, target_dir);
+                    final_path = final_path.with_extension("flac");
+                    self.log("ok", format!("FLAC извлечён: {}", final_path.display()));
+                }
+                "exists" => {
+                    ffmpeg::quarantine(&final_path, target_dir);
+                    final_path = final_path.with_extension("flac");
+                }
+                _ => self.log(
+                    "warn",
+                    format!("Не удалось извлечь FLAC из {}; оставлен .m4a", final_path.display()),
+                ),
+            }
+        }
+
+        let label = if info.bitrate > 0 {
+            format!("{codec} {} kbps", info.bitrate)
+        } else {
+            codec.to_string()
+        };
+        self.settle(index, "ok", &label, &final_path.display().to_string());
+    }
+
+    async fn tag(&self, track: &Track, path: &Path, track_id: &str) -> Result<()> {
+        let album_id = track
+            .albums
+            .first()
+            .and_then(|album| api::value_to_id(&album.id))
+            .unwrap_or_default();
+        let mut payload = audio::TagPayload::from_track(
+            track,
+            format!("https://music.yandex.ru/album/{album_id}/track/{track_id}"),
+            self.settings.compatibility_level,
+        );
+
+        if self.settings.embed_cover {
+            let uri = track
+                .albums
+                .first()
+                .and_then(|album| album.cover_uri.clone())
+                .or_else(|| track.cover_uri.clone());
+            if let Some(uri) = uri {
+                let size = if self.settings.cover_original {
+                    "orig".to_string()
+                } else {
+                    format!("{}x{}", self.settings.cover_resolution, self.settings.cover_resolution)
+                };
+                if let Ok(bytes) = self.client.cover(&uri, &size).await {
+                    payload.cover = Some(bytes);
+                }
+            }
+        }
+
+        if self.settings.lyrics_format != "none" {
+            let format = if self.settings.lyrics_format == "lrc" { "LRC" } else { "TEXT" };
+            if let Ok(text) = self.client.lyrics(track_id, format).await {
+                if self.settings.lyrics_format == "lrc" {
+                    let _ = std::fs::write(path.with_extension("lrc"), text);
+                } else {
+                    payload.lyrics = Some(text);
+                }
+            }
+        }
+
+        audio::write_tags(path, &payload)
+    }
+}
+
+pub struct Job {
+    shared: Arc<Shared>,
+    track_ids: Vec<String>,
+}
+
+impl Job {
+    pub fn new(
+        app: AppHandle,
+        client: Client,
+        settings: Settings,
+        control: JobControl,
+        track_ids: Vec<String>,
+    ) -> Self {
+        Self {
+            shared: Arc::new(Shared {
+                app,
+                client,
+                settings,
+                control,
+                counters: Counters::default(),
+                states: Mutex::new(Vec::new()),
+                total: AtomicUsize::new(track_ids.len()),
+            }),
+            track_ids,
+        }
+    }
+
+    pub async fn run(self) -> Result<JobProgress> {
+        let shared = self.shared;
+        if self.track_ids.is_empty() {
+            anyhow::bail!("Ничего не выбрано");
+        }
+
+        let mut tracks: Vec<Track> = Vec::with_capacity(self.track_ids.len());
+        for chunk in self.track_ids.chunks(BATCH) {
+            if shared.control.is_cancelled() {
+                break;
+            }
+            let fetched = shared.client.tracks(chunk).await?;
+            tracks.extend(fetched);
+            shared.log(
+                "info",
+                format!("Получены данные о треках: {} из {}", tracks.len(), self.track_ids.len()),
+            );
+        }
+
+        shared.total.store(tracks.len(), Ordering::SeqCst);
+        {
+            let mut states = shared.states.lock().expect("states lock");
+            states.clear();
+            for (index, track) in tracks.iter().enumerate() {
+                let item = api::track_item(track);
+                states.push(TrackState {
+                    index,
+                    total: tracks.len(),
+                    id: item.id,
+                    title: item.title,
+                    artist: item.artist,
+                    album: item.album,
+                    status: "pending".into(),
+                    codec: String::new(),
+                    bitrate: 0,
+                    done_bytes: 0,
+                    total_bytes: 0,
+                    path: String::new(),
+                    message: String::new(),
+                });
+            }
+            for state in states.iter() {
+                let _ = shared.app.emit(EVENT_TRACK, state.clone());
+            }
+        }
+        shared.emit_progress(true);
+
+        let target_dir = shared.settings.target_dir();
+        if let Err(error) = std::fs::create_dir_all(&target_dir) {
+            anyhow::bail!("Не удалось создать папку {}: {error}", target_dir.display());
+        }
+
+        let next = Arc::new(AtomicUsize::new(0));
+        let workers = shared.settings.concurrent.clamp(1, 6) as usize;
+        let tracks = Arc::new(tracks);
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let shared = shared.clone();
+            let tracks = tracks.clone();
+            let next = next.clone();
+            let target_dir = target_dir.clone();
+            handles.push(tauri::async_runtime::spawn(async move {
+                loop {
+                    let index = next.fetch_add(1, Ordering::SeqCst);
+                    if index >= tracks.len() || shared.control.is_cancelled() {
+                        break;
+                    }
+                    shared.download_one(index, &tracks[index], &target_dir).await;
+                    shared.counters.done.fetch_add(1, Ordering::SeqCst);
+                    shared.emit_progress(true);
+                }
+            }));
+        }
+        for handle in handles {
+            let _ = handle.await;
+        }
+
+        if shared.settings.extract_flac && ffmpeg::available() {
+            shared.log("info", "Проверяю скачанные файлы на настоящий FLAC…");
+            let stats = ffmpeg::post_process(&target_dir, shared.settings.quarantine_lossy);
+            if stats.converted > 0 {
+                shared.log("ok", format!("Извлечено FLAC из .m4a: {}", stats.converted));
+            }
+            if stats.quarantined > 0 {
+                shared.log(
+                    "info",
+                    format!("Старые lossy-файлы убраны в {}: {}", ffmpeg::BACKUP_DIR, stats.quarantined),
+                );
+            }
+            if stats.failed > 0 {
+                shared.log("warn", format!("Не удалось перепаковать файлов: {}", stats.failed));
+            }
+        }
+
+        let final_progress = JobProgress {
+            done: shared.counters.done.load(Ordering::SeqCst),
+            total: shared.total.load(Ordering::SeqCst),
+            ok: shared.counters.ok.load(Ordering::SeqCst),
+            failed: shared.counters.failed.load(Ordering::SeqCst),
+            skipped: shared.counters.skipped.load(Ordering::SeqCst),
+            running: false,
+            stopping: false,
+            cancelled: shared.control.is_cancelled(),
+        };
+        let _ = shared.app.emit(EVENT_FINISHED, final_progress.clone());
+        Ok(final_progress)
+    }
+}
