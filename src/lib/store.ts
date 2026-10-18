@@ -39,6 +39,7 @@ type State = {
   setAllTracks: (value: boolean) => void;
   start: () => Promise<void>;
   stop: () => Promise<void>;
+  resetToken: () => Promise<void>;
   toast: (text: string, tone?: Toast["tone"], action?: string, page?: Page) => void;
   dismissToast: (id: number) => void;
 };
@@ -250,6 +251,24 @@ export const useApp = create<State>((set, get) => ({
       return;
     }
     get().toast("Останавливаю после текущего трека…");
+  },
+
+  resetToken: async () => {
+    await api.clearToken();
+    // Reset the in-memory state as well: reloading the webview used to be the
+    // only trigger, and it left the old account and page behind when it failed.
+    set({
+      needsToken: true,
+      account: null,
+      source: null,
+      selected: new Set<string>(),
+      page: "home",
+      downloading: false,
+      progress: null,
+      tracks: [],
+      logs: [],
+    });
+    get().toast("Токен удалён — введите новый", "success");
   },
 
   toast: (text, tone = "info", action, page) => {

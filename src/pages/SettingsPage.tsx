@@ -18,6 +18,7 @@ export default function SettingsPage() {
   const dirty = useApp((state) => state.settingsDirty);
   const patch = useApp((state) => state.patchSettings);
   const persist = useApp((state) => state.saveSettingsDraft);
+  const resetToken = useApp((state) => state.resetToken);
   const toast = useApp((state) => state.toast);
   const account = useApp((state) => state.account);
 
@@ -535,7 +536,7 @@ export default function SettingsPage() {
         <Section icon="key" title="Токен и файлы">
           <Row
             name="Путь к токену"
-            desc="Тот же файл, что использовал консольный ym-dl"
+            desc="Лежит рядом с программой: папку можно перенести целиком"
             control={<span className="path-box">{env?.tokenPath ?? "—"}</span>}
           />
           <Row
@@ -552,8 +553,11 @@ export default function SettingsPage() {
                 size="compact"
                 icon="logout"
                 onClick={async () => {
-                  await api.clearToken();
-                  window.location.reload();
+                  try {
+                    await resetToken();
+                  } catch (error) {
+                    toast(String((error as Error).message), "error");
+                  }
                 }}
               >
                 Сбросить токен

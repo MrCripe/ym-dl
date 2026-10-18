@@ -4,6 +4,7 @@ mod commands;
 mod config;
 mod download;
 mod ffmpeg;
+pub mod live;
 mod model;
 mod sign;
 mod startup_log;
@@ -14,14 +15,15 @@ use std::path::PathBuf;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
-/// Every folder worth trying as the WebView2 profile. The first one that both
-/// accepts a probe write and yields a window wins.
+/// Every folder worth trying as the WebView2 profile, in portable-first order:
+/// next to the exe so the whole app travels as one folder, then the profile, then
+/// temp. The first one that both accepts a probe write and yields a window wins.
 fn data_dirs(app: &tauri::App) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Ok(dir) = app.path().app_local_data_dir() {
-        dirs.push(dir.join("webview"));
-    }
     if let Some(dir) = config::exe_dir() {
+        dirs.push(dir.join("ym-dl-data").join("webview"));
+    }
+    if let Ok(dir) = app.path().app_local_data_dir() {
         dirs.push(dir.join("webview"));
     }
     dirs.push(std::env::temp_dir().join("ym-dl-webview"));

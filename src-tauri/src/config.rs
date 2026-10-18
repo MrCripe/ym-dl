@@ -101,7 +101,10 @@ impl Settings {
     pub fn target_dir(&self) -> PathBuf {
         let raw = self.download_dir.trim();
         if raw.is_empty() {
-            return home_dir().join("Music").join("lmao");
+            // Portable build: downloads land next to the exe, not in the profile,
+            // because a locked-down profile refuses writes and the job then fails
+            // after the track was already resolved.
+            return default_download_dir();
         }
         expand_home(raw)
     }
@@ -111,6 +114,21 @@ pub fn home_dir() -> PathBuf {
     directories::UserDirs::new()
         .map(|dirs| dirs.home_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Where downloads go when the user has not chosen a folder.
+///
+/// Next to the executable is the portable choice and the only one that works
+/// when the profile is locked down; the old `~/Music/lmao` is used only if the
+/// exe folder turns out to be read-only (an installed build in Program Files).
+pub fn default_download_dir() -> PathBuf {
+    if let Some(dir) = exe_dir() {
+        let candidate = dir.join("Music");
+        if dir_writable(&candidate) {
+            return candidate;
+        }
+    }
+    home_dir().join("Music").join("lmao")
 }
 
 /// True when `dir` exists and a file can actually be created in it. Creating the
@@ -138,31 +156,33 @@ pub fn exe_dir() -> Option<PathBuf> {
         .and_then(|path| path.parent().map(Path::to_path_buf))
 }
 
-pub fn config_dir() -> PathBuf {
-    let primary = ProjectDirs::from(APP_DIR_QUALIFIER, APP_DIR_ORG, APP_DIR_NAME)
-        .map(|dirs| dirs.config_dir().to_path_buf())
-        .unwrap_or_else(|| home_dir().join(".config").join(APP_DIR_NAME));
-    if dir_writable(&primary) {
-        return primary;
-    }
-    // A locked-down profile still has to be able to store its settings.
-    let mut fallbacks = Vec::new();
+/// Portable data folder: everything the app owns lives next to the exe, so the
+/// whole thing can be moved on a flash drive. Falls back to the profile only if
+/// the exe folder is read-only.
+pub fn portable_dir() -> PathBuf {
     if let Some(dir) = exe_dir() {
-        fallbacks.push(dir.join("config"));
+        let candidate = dir.join("ym-dl-data");
+        if dir_writable(&candidate) {
+            return candidate;
+        }
     }
-    fallbacks.push(std::env::temp_dir().join(APP_DIR_NAME));
-    fallbacks
-        .into_iter()
-        .find(|dir| dir_writable(dir))
-        .unwrap_or(primary)
+    ProjectDirs::from(APP_DIR_QUALIFIER, APP_DIR_ORG, APP_DIR_NAME)
+        .map(|dirs| dirs.config_dir().to_path_buf())
+        .unwrap_or_else(|| home_dir().join(".config").join(APP_DIR_NAME))
+}
+
+pub fn config_dir() -> PathBuf {
+    portable_dir()
 }
 
 pub fn config_path() -> PathBuf {
     config_dir().join("config.json")
 }
 
+/// Portable build: the token travels with the folder, so a copied app stays
+/// logged in and nothing is written to the profile.
 pub fn token_path() -> PathBuf {
-    home_dir().join(".ym-dl-token")
+    config_dir().join("token")
 }
 
 pub fn expand_home(raw: &str) -> PathBuf {
@@ -189,10 +209,27 @@ pub fn save_settings(settings: &Settings) -> Result<()> {
     Ok(())
 }
 
+/// The token that shipped with the previous version, kept only to migrate it
+/// once into the portable folder.
+fn legacy_token_path() -> PathBuf {
+    home_dir().join(".ym-dl-token")
+}
+
 pub fn read_token() -> String {
-    fs::read_to_string(token_path())
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|_| std::env::var("YM_TOKEN").unwrap_or_default())
+    if let Ok(value) = fs::read_to_string(token_path()) {
+        return value.trim().to_string();
+    }
+    // One-time migration: an existing installation keeps its login.
+    let legacy = legacy_token_path();
+    if let Ok(value) = fs::read_to_string(&legacy) {
+        let trimmed = value.trim().to_string();
+        if !trimmed.is_empty() && write_token(&trimmed).is_ok() {
+            let _ = fs::remove_file(&legacy);
+            return trimmed;
+        }
+        return trimmed;
+    }
+    std::env::var("YM_TOKEN").unwrap_or_default()
 }
 
 pub fn write_token(token: &str) -> Result<()> {
@@ -204,10 +241,19 @@ pub fn write_token(token: &str) -> Result<()> {
 }
 
 pub fn clear_token() -> Result<()> {
-    match fs::remove_file(token_path()) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).context("не удалось удалить файл токена"),
+    // Both locations: the portable one and the file an older build used, or a
+    // "reset" would silently keep the old login alive.
+    let mut last_error = None;
+    for path in [token_path(), legacy_token_path()] {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => last_error = Some(error),
+        }
+    }
+    match last_error {
+        Some(error) => Err(error).context("не удалось удалить файл токена"),
+        None => Ok(()),
     }
 }
 
@@ -260,9 +306,23 @@ mod tests {
     }
 
     #[test]
-    fn default_target_dir_ends_with_music_lmao() {
+    fn default_target_dir_is_writable_and_not_the_profile() {
+        // Portable build: downloads go next to the exe, which is the one place
+        // that works when the user profile refuses writes.
         let mut settings = Settings::default();
         settings.download_dir.clear();
-        assert!(settings.target_dir().ends_with("Music/lmao") || settings.target_dir().ends_with("Music\\lmao"));
+        let dir = settings.target_dir();
+        assert!(dir_writable(&dir), "default download dir must accept writes: {}", dir.display());
+        assert!(
+            dir.ends_with("Music") || dir.ends_with("Music/lmao") || dir.ends_with("Music\\lmao"),
+            "unexpected default: {}",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn portable_dir_is_writable() {
+        let dir = portable_dir();
+        assert!(dir_writable(&dir), "portable data dir must be writable: {}", dir.display());
     }
 }

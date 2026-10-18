@@ -88,9 +88,13 @@ impl Shared {
     }
 
     fn log(&self, level: &str, message: impl Into<String>) {
+        let message = message.into();
+        // Mirror to the startup log: a toast disappears, and the log is the only
+        // thing left to diagnose a failed download with.
+        crate::startup_log::write(&format!("[{level}] {message}"));
         let _ = self.app.emit(
             EVENT_LOG,
-            JobLog { level: level.to_string(), message: message.into() },
+            JobLog { level: level.to_string(), message },
         );
     }
 
@@ -114,6 +118,20 @@ impl Shared {
     }
 
     fn settle(&self, index: usize, status: &str, message: &str, path: &str) {
+        let title = {
+            let states = match self.states.lock() {
+                Ok(states) => states,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            states.get(index).map(|state| state.title.clone()).unwrap_or_default()
+        };
+        if status == "failed" {
+            // A toast disappears; the log is what is left afterwards.
+            self.log(
+                "error",
+                format!("«{title}»: {message}{}", if path.is_empty() { String::new() } else { format!(" ({path})") }),
+            );
+        }
         self.update(index, |state| {
             state.status = status.to_string();
             state.message = message.to_string();
@@ -431,9 +449,28 @@ impl Job {
         }
         shared.emit_progress(true);
 
-        let target_dir = shared.settings.target_dir();
-        if let Err(error) = std::fs::create_dir_all(&target_dir) {
-            anyhow::bail!("Не удалось создать папку {}: {error}", target_dir.display());
+        let mut target_dir = shared.settings.target_dir();
+        if !crate::config::dir_writable(&target_dir) {
+            // A locked-down profile refuses writes to the configured folder. Fall
+            // back to the portable folder instead of failing after the tracks were
+            // already resolved and shown to the user.
+            let fallback = crate::config::default_download_dir();
+            shared.log(
+                "warn",
+                format!(
+                    "Нет прав на запись в {} — качаю в {}",
+                    target_dir.display(),
+                    fallback.display()
+                ),
+            );
+            target_dir = fallback;
+            if !crate::config::dir_writable(&target_dir) {
+                anyhow::bail!(
+                    "нет папки, доступной для записи: {} и {}",
+                    target_dir.display(),
+                    shared.settings.target_dir().display()
+                );
+            }
         }
 
         let next = Arc::new(AtomicUsize::new(0));
