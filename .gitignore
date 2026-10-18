@@ -14,3 +14,6 @@ ym-dl-data/
 ym-dl.log
 .DS_Store
 Thumbs.db
+# Legacy Python implementation: kept locally, not part of the shipped app. It
+# imports the GPL `ymd` package, so it is not published under MIT.
+archive/
