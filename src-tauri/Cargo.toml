@@ -35,11 +35,8 @@ sha2 = "0.10"
 base64 = "0.22"
 aes = "0.8"
 ctr = "0.9"
-rand = "0.8"
-regex = "1"
 directories = "6"
 anyhow = "1"
-thiserror = "2"
 lofty = "0.22"
 
 [profile.release]

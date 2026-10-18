@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 
 const FILLED: CSSProperties = {
   fontVariationSettings: '"FILL" 1, "wght" 500, "GRAD" 0, "opsz" 24',
@@ -314,30 +314,6 @@ export function Progress({ value, indeterminate }: { value: number; indeterminat
   return (
     <div className={`progress ${indeterminate ? "indeterminate" : ""}`}>
       <div className="bar" style={{ width: `${Math.min(100, Math.max(0, value))}%` }} />
-    </div>
-  );
-}
-
-export function Divider() {
-  return <hr className="divider" />;
-}
-
-/** Fades content in whenever the key changes — used for page transitions. */
-export function AnimatedIn({ children, delay = 0 }: { children: ReactNode; delay?: number }) {
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    const timer = window.setTimeout(() => setVisible(true), delay);
-    return () => window.clearTimeout(timer);
-  }, [delay]);
-  return (
-    <div
-      style={{
-        opacity: visible ? 1 : 0,
-        transform: visible ? "none" : "translateY(10px)",
-        transition: "opacity 320ms var(--ease-emphasized), transform 320ms var(--ease-emphasized)",
-      }}
-    >
-      {children}
     </div>
   );
 }

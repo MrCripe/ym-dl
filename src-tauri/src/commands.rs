@@ -81,13 +81,6 @@ pub fn has_token() -> bool {
 }
 
 #[tauri::command]
-pub fn save_token(state: State<'_, AppState>, token: String) -> Result<(), String> {
-    config::write_token(&token).map_err(|error| format!("{error:#}"))?;
-    state.reset_client();
-    Ok(())
-}
-
-#[tauri::command]
 pub fn clear_token(state: State<'_, AppState>) -> Result<(), String> {
     config::clear_token().map_err(|error| format!("{error:#}"))?;
     state.reset_client();
@@ -188,6 +181,9 @@ pub fn start_download(
         }
         if let Some(state) = running.try_state::<AppState>() {
             state.running.store(false, Ordering::SeqCst);
+            if let Ok(mut slot) = state.job.lock() {
+                *slot = None;
+            }
         }
     });
     Ok(())
@@ -205,11 +201,6 @@ pub fn stop_download(state: State<'_, AppState>) -> bool {
         },
         Err(_) => false,
     }
-}
-
-#[tauri::command]
-pub fn is_downloading(state: State<'_, AppState>) -> bool {
-    state.running.load(Ordering::SeqCst)
 }
 
 #[tauri::command]
@@ -244,11 +235,6 @@ pub async fn post_process(state: State<'_, AppState>) -> Result<ffmpeg::PostProc
     })
     .await
     .map_err(|error| format!("{error}"))?)
-}
-
-#[tauri::command]
-pub fn preview_path(state: State<'_, AppState>) -> String {
-    state.settings().target_dir().display().to_string()
 }
 
 #[tauri::command]

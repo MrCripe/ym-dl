@@ -185,7 +185,7 @@ pub struct Plus {
 #[serde(rename_all = "camelCase")]
 pub struct Permissions {
     #[serde(default)]
-    pub values: Option<String>,
+    pub values: Vec<String>,
     #[serde(default)]
     pub until: Option<String>,
 }
@@ -247,6 +247,14 @@ pub struct DownloadInfo {
     pub key: Option<String>,
     #[serde(default)]
     pub urls: Vec<String>,
+}
+
+/// `get-file-info` wraps the payload one level deep: `{"downloadInfo": {...}}`.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FileInfo {
+    #[serde(default)]
+    pub download_info: DownloadInfo,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

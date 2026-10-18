@@ -16,13 +16,13 @@ use std::time::Duration;
 
 const BASE: &str = "https://api.music.yandex.net";
 const TRACK_BATCH: usize = 100;
-const MAX_ATTEMPTS: u32 = 4;
+/// Ceiling for `settings.tries`: the setting allows "forever", the UI must not.
+const MAX_ATTEMPTS: u32 = 6;
 
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
     token: String,
-    timeout: Duration,
     tries: u32,
     retry_delay: Duration,
 }
@@ -38,7 +38,6 @@ impl Client {
         Ok(Self {
             http,
             token: token.trim().to_string(),
-            timeout: Duration::from_secs(timeout.max(1)),
             tries,
             retry_delay: Duration::from_secs(retry_delay),
         })
@@ -55,6 +54,17 @@ impl Client {
         headers
     }
 
+    /// How many times one request may be attempted. `tries == 0` means "retry
+    /// forever" in the loader's vocabulary, capped here so a dead network cannot
+    /// hang a command for minutes.
+    fn attempts(&self) -> u32 {
+        if self.tries == 0 {
+            MAX_ATTEMPTS
+        } else {
+            self.tries.min(MAX_ATTEMPTS).max(1)
+        }
+    }
+
     /// Runs one request with retries. `build` is called per attempt so signed
     /// parameters get a fresh timestamp every time.
     async fn request<T, F>(&self, build: F) -> Result<T>
@@ -62,9 +72,7 @@ impl Client {
         T: DeserializeOwned,
         F: Fn() -> reqwest::RequestBuilder,
     {
-        // `tries == 0` means "retry forever" in the loader's vocabulary; here it
-        // is capped so a dead network cannot hang the UI thread's command.
-        let max_attempts = if self.tries == 0 { MAX_ATTEMPTS } else { self.tries.min(MAX_ATTEMPTS).max(1) };
+        let max_attempts = self.attempts();
         let mut attempt = 0u32;
         loop {
             attempt += 1;
@@ -127,7 +135,13 @@ impl Client {
     }
 
     pub async fn likes_tracks(&self, user: Option<&str>) -> Result<Vec<String>> {
+        // The server nests the list one level deep: `result.library.tracks`.
         #[derive(serde::Deserialize)]
+        struct Response {
+            #[serde(default)]
+            library: Library,
+        }
+        #[derive(serde::Deserialize, Default)]
         struct Library {
             #[serde(default)]
             tracks: Vec<ShortTrack>,
@@ -139,10 +153,21 @@ impl Client {
         }
         let path = match user.map(str::trim).filter(|value| !value.is_empty()) {
             Some(name) => format!("/users/{name}/likes/tracks"),
-            None => "/users/0/likes/tracks".to_string(),
+            // `0` is not a user id: the server only understands a real uid here.
+            None => {
+                let uid = self
+                    .status()
+                    .await
+                    .ok()
+                    .and_then(|status| status.account)
+                    .and_then(|account| value_to_id(&account.uid))
+                    .ok_or_else(|| anyhow!("не удалось определить uid аккаунта"))?;
+                format!("/users/{uid}/likes/tracks")
+            }
         };
-        let library: Library = self.get(&path, &[]).await?;
-        Ok(library
+        let response: Response = self.get(&path, &[]).await?;
+        Ok(response
+            .library
             .tracks
             .iter()
             .filter_map(|track| value_to_id(&track.id))
@@ -192,26 +217,31 @@ impl Client {
 
     /// Signed `get-file-info`: the only call that can hand out lossless.
     pub async fn download_info(&self, track_id: &str, quality: &str) -> Result<DownloadInfo> {
-        self.request(|| {
-            let timestamp = sign::now();
-            let signature = sign::file_info_sign(track_id, quality, "encraw", timestamp);
-            let mut headers = self.mobile_headers();
-            if let Ok(value) = sign::DESKTOP_CLIENT.parse() {
-                headers.insert("X-Yandex-Music-Client", value);
-            }
-            self.http
-                .get(format!("{BASE}/get-file-info"))
-                .headers(headers)
-                .query(&[
-                    ("ts", timestamp.to_string()),
-                    ("trackId", track_id.to_string()),
-                    ("quality", quality.to_string()),
-                    ("codecs", sign::CODECS.join(",")),
-                    ("transports", "encraw".to_string()),
-                    ("sign", signature),
-                ])
-        })
-        .await
+        let info: FileInfo = self
+            .request(|| {
+                let timestamp = sign::now();
+                let signature = sign::file_info_sign(track_id, quality, "encraw", timestamp);
+                let mut headers = self.mobile_headers();
+                if let Ok(value) = sign::DESKTOP_CLIENT.parse() {
+                    headers.insert("X-Yandex-Music-Client", value);
+                }
+                self.http
+                    .get(format!("{BASE}/get-file-info"))
+                    .headers(headers)
+                    .query(&[
+                        ("ts", timestamp.to_string()),
+                        ("trackId", track_id.to_string()),
+                        ("quality", quality.to_string()),
+                        ("codecs", sign::CODECS.join(",")),
+                        ("transports", "encraw".to_string()),
+                        ("sign", signature),
+                    ])
+            })
+            .await?;
+        if info.download_info.urls.is_empty() {
+            bail!("сервер не вернул ссылку на файл для трека {track_id} ({quality})");
+        }
+        Ok(info.download_info)
     }
 
     pub async fn lyrics(&self, track_id: &str, format: &str) -> Result<String> {
@@ -245,11 +275,37 @@ impl Client {
     /// Raw audio stream for a track. `on_chunk` receives `(downloaded, total)`
     /// and returns `false` to abort, which is how a stop request interrupts a
     /// transfer that is already in flight.
+    ///
+    /// A dropped connection restarts the transfer from zero: the server has no
+    /// range support for these signed URLs, so there is nothing to resume.
     pub async fn audio_stream(
         &self,
         url: &str,
         mut on_chunk: impl FnMut(u64, u64) -> bool,
     ) -> Result<Vec<u8>> {
+        let mut last_error = None;
+        for attempt in 1..=self.attempts() {
+            match self.stream_once(url, &mut on_chunk).await {
+                Ok(Some(body)) => return Ok(body),
+                Ok(None) => bail!("загрузка остановлена"),
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt < self.attempts() {
+                        let backoff = self.retry_delay * attempt;
+                        tokio::time::sleep(backoff.max(Duration::from_millis(400))).await;
+                    }
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow!("аудио не загрузилось")))
+    }
+
+    /// One transfer attempt. `Ok(None)` means the caller asked to stop.
+    async fn stream_once(
+        &self,
+        url: &str,
+        on_chunk: &mut impl FnMut(u64, u64) -> bool,
+    ) -> Result<Option<Vec<u8>>> {
         use futures_util::StreamExt;
         let response = self
             .http
@@ -273,10 +329,10 @@ impl Client {
             let chunk = chunk.context("обрыв соединения при загрузке аудио")?;
             body.extend_from_slice(&chunk);
             if !on_chunk(body.len() as u64, total) {
-                bail!("загрузка остановлена");
+                return Ok(None);
             }
         }
-        Ok(body)
+        Ok(Some(body))
     }
 
 }
@@ -325,7 +381,7 @@ pub async fn check_token(client: &Client) -> Result<AccountInfo> {
     }
     info.has_plus = status.plus.map(|plus| plus.has_plus).unwrap_or(false);
     if let Some(permissions) = status.permissions {
-        info.permissions = permissions.values.unwrap_or_default();
+        info.permissions = permissions.values.join(", ");
         info.expires = permissions.until.unwrap_or_default();
     }
     if let Some(subscription) = status.subscription {
@@ -671,5 +727,70 @@ mod tests {
     fn duration_is_formatted() {
         assert_eq!(format_duration(Some(305_600)), "5:05");
         assert_eq!(format_duration(None), "");
+    }
+
+    /// The wire shape these tests pin is the one the reference client
+    /// (`yandex_music` 3.2.2, `FileInfo.de_json`) expects: `result.downloadInfo`.
+    #[test]
+    fn file_info_wraps_download_info() {
+        let json = serde_json::json!({
+            "downloadInfo": {
+                "quality": "lossless",
+                "codec": "flac-mp4",
+                "bitrate": 900,
+                "key": "00112233445566778899aabbccddeeff",
+                "urls": ["https://example.invalid/1"]
+            }
+        });
+        let info: FileInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(info.download_info.codec, "flac-mp4");
+        assert_eq!(info.download_info.bitrate, 900);
+        assert_eq!(info.download_info.urls.len(), 1);
+        assert!(info.download_info.key.is_some());
+    }
+
+    #[test]
+    fn likes_are_nested_under_library() {
+        let json = serde_json::json!({
+            "library": { "tracks": [{ "id": "53404" }, { "id": 42 }] }
+        });
+        #[derive(serde::Deserialize)]
+        struct Response {
+            #[serde(default)]
+            library: Library,
+        }
+        #[derive(serde::Deserialize, Default)]
+        struct Library {
+            #[serde(default)]
+            tracks: Vec<ShortTrack>,
+        }
+        #[derive(serde::Deserialize)]
+        struct ShortTrack {
+            #[serde(default)]
+            id: Value,
+        }
+        let response: Response = serde_json::from_value(json).unwrap();
+        let ids: Vec<String> = response
+            .library
+            .tracks
+            .iter()
+            .filter_map(|track| value_to_id(&track.id))
+            .collect();
+        assert_eq!(ids, vec!["53404".to_string(), "42".to_string()]);
+    }
+
+    #[test]
+    fn permissions_values_is_a_list_of_strings() {
+        // The server sends `values: ["high-quality", ...]`; a `String` field
+        // made the whole `/account/status` parse fail and locked the wizard.
+        let json = serde_json::json!({
+            "account": { "uid": 987853379, "login": "user" },
+            "plus": { "hasPlus": true },
+            "permissions": { "values": ["high-quality", "library-play"], "until": "2027-01-01" }
+        });
+        let status: Status = serde_json::from_value(json).unwrap();
+        let permissions = status.permissions.unwrap();
+        assert_eq!(permissions.values.len(), 2);
+        assert_eq!(permissions.values[0], "high-quality");
     }
 }

@@ -15,6 +15,7 @@ const NAV: { key: Page; icon: string; label: string }[] = [
 
 export default function App() {
   const ready = useApp((state) => state.ready);
+  const initError = useApp((state) => state.initError);
   const needsToken = useApp((state) => state.needsToken);
   const page = useApp((state) => state.page);
   const setPage = useApp((state) => state.setPage);
@@ -47,6 +48,22 @@ export default function App() {
     return (
       <div style={{ height: "100%", display: "grid", placeItems: "center" }}>
         <span className="md-body muted">Запускаю ym-dl…</span>
+      </div>
+    );
+  }
+
+  if (initError) {
+    return (
+      <div style={{ height: "100%", display: "grid", placeItems: "center", padding: 32 }}>
+        <div style={{ maxWidth: 520, textAlign: "center" }}>
+          <Icon name="error" size={40} />
+          <div className="md-title" style={{ marginTop: 12 }}>
+            Не удалось прочитать настройки
+          </div>
+          <div className="md-body-sm muted" style={{ marginTop: 8 }}>
+            {initError}
+          </div>
+        </div>
       </div>
     );
   }
@@ -89,7 +106,14 @@ export default function App() {
           <div key={toast.id} className={`toast ${toast.tone === "info" ? "" : toast.tone}`}>
             <span className="grow md-body">{toast.text}</span>
             {toast.action ? (
-              <button type="button" className="action" onClick={() => dismissToast(toast.id)}>
+              <button
+                type="button"
+                className="action"
+                onClick={() => {
+                  dismissToast(toast.id);
+                  if (toast.page) setPage(toast.page);
+                }}
+              >
                 {toast.action}
               </button>
             ) : null}

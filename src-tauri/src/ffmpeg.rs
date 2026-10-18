@@ -204,7 +204,11 @@ mod tests {
 
     #[test]
     fn quarantine_moves_file_into_backup_folder() {
-        let root = std::env::temp_dir().join(format!("ymdl-quarantine-{}", std::process::id()));
+        // `target` is writable wherever the tests can run at all; `temp_dir()`
+        // is not, on a machine with a redirected or locked-down %TEMP%.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("ymdl-quarantine-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let source = root.join("track.m4a");

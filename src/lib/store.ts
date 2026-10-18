@@ -2,12 +2,13 @@ import { create } from "zustand";
 import { api, subscribe, type AccountInfo, type JobProgress, type Settings, type SourceInfo, type TrackState } from "./api";
 
 export type Page = "home" | "downloads" | "settings";
-export type Toast = { id: number; text: string; tone: "info" | "error" | "success"; action?: string };
+export type Toast = { id: number; text: string; tone: "info" | "error" | "success"; action?: string; page?: Page };
 
 type LogLine = { level: string; message: string; time: number };
 
 type State = {
   ready: boolean;
+  initError: string;
   needsToken: boolean;
   settings: Settings | null;
   account: AccountInfo | null;
@@ -32,7 +33,7 @@ type State = {
   setAllTracks: (value: boolean) => void;
   start: () => Promise<void>;
   stop: () => Promise<void>;
-  toast: (text: string, tone?: Toast["tone"], action?: string) => void;
+  toast: (text: string, tone?: Toast["tone"], action?: string, page?: Page) => void;
   dismissToast: (id: number) => void;
 };
 
@@ -40,6 +41,7 @@ let toastId = 0;
 
 export const useApp = create<State>((set, get) => ({
   ready: false,
+  initError: "",
   needsToken: true,
   settings: null,
   account: null,
@@ -54,13 +56,46 @@ export const useApp = create<State>((set, get) => ({
   toasts: [],
 
   init: async () => {
-    const [settings, hasToken] = await Promise.all([api.settings(), api.hasToken()]);
+    let settings: Settings;
+    let hasToken: boolean;
+    try {
+      [settings, hasToken] = await Promise.all([api.settings(), api.hasToken()]);
+    } catch (error) {
+      // Without this the shell stays on "Запускаю ym-dl…" forever.
+      set({ ready: true, needsToken: false, initError: String((error as Error).message) });
+      return;
+    }
     set({ settings, needsToken: !hasToken, ready: true });
 
     if (hasToken) {
       api
         .probeLossless()
         .then((account) => set({ account, needsToken: false }))
+        .catch((error) => {
+          // A rejected token must send the user back to the token screen
+          // instead of leaving an empty, unusable shell.
+          if (String((error as Error).message).includes("401")) {
+            set({ needsToken: true, account: null });
+          }
+        });
+    }
+
+    // Quiet startup update check: only a real update produces a message.
+    if (settings.checkUpdates) {
+      api
+        .environment()
+        .then((env) => api.updates(env.appVersion, ""))
+        .then((entries) => {
+          const stale = entries.filter((entry) => entry.newer);
+          if (stale.length) {
+            get().toast(
+              `Доступно обновление: ${stale.map((entry) => `${entry.name} ${entry.latest}`).join(", ")}`,
+              "info",
+              "Настройки",
+              "settings",
+            );
+          }
+        })
         .catch(() => undefined);
     }
 
@@ -84,6 +119,7 @@ export const useApp = create<State>((set, get) => ({
             : `Готово: ${progress.ok} скачано, ${progress.skipped} пропущено, ${progress.failed} с ошибкой`,
           progress.failed > 0 ? "error" : "success",
           "Загрузки",
+          "downloads",
         );
       },
     });
@@ -113,6 +149,14 @@ export const useApp = create<State>((set, get) => ({
         selected: new Set(source.tracks.filter((track) => track.available).map((track) => track.id)),
         loadingSource: false,
       });
+      // Remember the link so the next launch starts where the user left off.
+      const { settings } = get();
+      if (settings && settings.lastUrl !== url) {
+        api.saveSettings({ ...settings, lastUrl: url }).then(
+          (saved) => set({ settings: saved }),
+          () => undefined,
+        );
+      }
     } catch (error) {
       set({ loadingSource: false });
       get().toast(String((error as Error).message), "error");
@@ -173,9 +217,9 @@ export const useApp = create<State>((set, get) => ({
     get().toast("Останавливаю после текущего трека…");
   },
 
-  toast: (text, tone = "info", action) => {
+  toast: (text, tone = "info", action, page) => {
     const id = ++toastId;
-    set((current) => ({ toasts: [...current.toasts, { id, text, tone, action }] }));
+    set((current) => ({ toasts: [...current.toasts, { id, text, tone, action, page }] }));
     window.setTimeout(() => get().dismissToast(id), 6000);
   },
 

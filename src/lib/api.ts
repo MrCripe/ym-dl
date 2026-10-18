@@ -120,19 +120,16 @@ export const api = {
   settings: () => call<Settings>("get_settings"),
   saveSettings: (settings: Settings) => call<Settings>("save_settings", { settings }),
   hasToken: () => call<boolean>("has_token"),
-  saveToken: (token: string) => call<void>("save_token", { token }),
   clearToken: () => call<void>("clear_token"),
   checkToken: (token: string) => call<AccountInfo>("check_token", { token }),
   resolve: (url: string) => call<SourceInfo>("resolve_source", { url }),
   likes: () => call<SourceInfo>("load_likes"),
   start: (trackIds: string[]) => call<void>("start_download", { trackIds }),
   stop: () => call<boolean>("stop_download"),
-  isDownloading: () => call<boolean>("is_downloading"),
   updates: (appVersion: string, repo: string) =>
     call<UpdateEntry[]>("check_updates", { appVersion, repo }),
   environment: () => call<EnvironmentInfo>("environment"),
   postProcess: () => call<PostProcessStats>("post_process"),
-  previewPath: () => call<string>("preview_path"),
   probeLossless: (trackId?: string) =>
     call<AccountInfo>("probe_lossless", { trackId: trackId ?? null }),
 };

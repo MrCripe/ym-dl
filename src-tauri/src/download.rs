@@ -64,6 +64,10 @@ struct Shared {
     counters: Counters,
     states: Mutex<Vec<TrackState>>,
     total: AtomicUsize,
+    /// Paths already handed out to a track in this job. Two tracks that render
+    /// to the same name (same artist/title, or a template without #track-id)
+    /// would otherwise overwrite each other.
+    claimed: Mutex<std::collections::HashSet<PathBuf>>,
 }
 
 impl Shared {
@@ -99,6 +103,32 @@ impl Shared {
         let _ = self.app.emit(EVENT_TRACK, snapshot);
     }
 
+    /// Reserves a unique path for this track, adding " (2)", " (3)" … on a clash.
+    fn claim(&self, path: PathBuf) -> PathBuf {
+        let mut claimed = match self.claimed.lock() {
+            Ok(claimed) => claimed,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if claimed.insert(path.clone()) {
+            return path;
+        }
+        let stem = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let extension = path.extension().map(|ext| ext.to_os_string());
+        for counter in 2..1000 {
+            let mut candidate = path.with_file_name(format!("{stem} ({counter})"));
+            if let Some(extension) = &extension {
+                candidate.set_extension(extension);
+            }
+            if claimed.insert(candidate.clone()) {
+                return candidate;
+            }
+        }
+        path
+    }
+
     fn settle(&self, index: usize, status: &str, message: &str, path: &str) {
         self.update(index, |state| {
             state.status = status.to_string();
@@ -127,11 +157,16 @@ impl Shared {
             return;
         }
         let item = api::track_item(track);
-        let base = target_dir.join(audio::base_path(
+        let mut base = target_dir.join(audio::base_path(
             &self.settings.path_pattern,
             track,
             self.settings.unsafe_path,
         ));
+        // A template of bare placeholders can render to nothing (an untitled
+        // track with no artist); writing to the folder itself would fail.
+        if base.as_os_str().is_empty() || base == target_dir {
+            base = target_dir.join(&item.id);
+        }
 
         if self.settings.skip_existing
             && [".mp3", ".flac", ".m4a"]
@@ -156,7 +191,7 @@ impl Shared {
         };
         let (container, codec) = audio::container_name(&info.codec);
         let extension = audio::extension_for(container, codec);
-        let mut final_path = PathBuf::from(format!("{}{extension}", base.display()));
+        let mut final_path = self.claim(PathBuf::from(format!("{}{extension}", base.display())));
 
         if let Some(parent) = final_path.parent() {
             if let Err(error) = std::fs::create_dir_all(parent) {
@@ -221,7 +256,7 @@ impl Shared {
             return;
         }
 
-        if let Err(error) = self.tag(track, &temp, &item.id).await {
+        if let Err(error) = self.tag(track, &temp, &final_path, &item.id).await {
             self.log("warn", format!("Теги не записались для «{}»: {error:#}", item.title));
         }
         if let Err(error) = std::fs::rename(&temp, &final_path) {
@@ -255,9 +290,15 @@ impl Shared {
             codec.to_string()
         };
         self.settle(index, "ok", &label, &final_path.display().to_string());
+
+        // Pause between tracks: the API throttles a burst of requests, and the
+        // setting exists for exactly that. Skipped when stopping.
+        if self.settings.delay > 0 && !self.control.is_cancelled() {
+            tokio::time::sleep(std::time::Duration::from_secs(self.settings.delay)).await;
+        }
     }
 
-    async fn tag(&self, track: &Track, path: &Path, track_id: &str) -> Result<()> {
+    async fn tag(&self, track: &Track, path: &Path, final_path: &Path, track_id: &str) -> Result<()> {
         let album_id = track
             .albums
             .first()
@@ -291,7 +332,9 @@ impl Shared {
             let format = if self.settings.lyrics_format == "lrc" { "LRC" } else { "TEXT" };
             if let Ok(text) = self.client.lyrics(track_id, format).await {
                 if self.settings.lyrics_format == "lrc" {
-                    let _ = std::fs::write(path.with_extension("lrc"), text);
+                    // The tag path is the `.part` file; lyrics belong next to
+                    // the final track, not next to the temporary one.
+                    let _ = std::fs::write(final_path.with_extension("lrc"), text);
                 } else {
                     payload.lyrics = Some(text);
                 }
@@ -324,6 +367,7 @@ impl Job {
                 counters: Counters::default(),
                 states: Mutex::new(Vec::new()),
                 total: AtomicUsize::new(track_ids.len()),
+                claimed: Mutex::new(std::collections::HashSet::new()),
             }),
             track_ids,
         }
@@ -350,7 +394,12 @@ impl Job {
 
         shared.total.store(tracks.len(), Ordering::SeqCst);
         {
-            let mut states = shared.states.lock().expect("states lock");
+            // A poisoned lock here would abort the whole process (panic=abort),
+            // so the states vector is rebuilt defensively instead.
+            let mut states = match shared.states.lock() {
+                Ok(states) => states,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             states.clear();
             for (index, track) in tracks.iter().enumerate() {
                 let item = api::track_item(track);

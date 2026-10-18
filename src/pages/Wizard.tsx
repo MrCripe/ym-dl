@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, type AccountInfo } from "../lib/api";
 import { useApp } from "../lib/store";
 import { Badge, Button, Icon, TextField } from "../components/ui";
@@ -105,7 +106,7 @@ export default function Wizard() {
             variant="text"
             size="compact"
             icon="open_in_new"
-            onClick={() => window.open(TOKEN_HELP, "_blank")}
+            onClick={() => openUrl(TOKEN_HELP).catch(() => undefined)}
           >
             Где взять токен
           </Button>

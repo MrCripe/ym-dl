@@ -142,6 +142,14 @@ export default function Downloads() {
             <Badge tone="primary" icon="bolt">
               {progress?.stopping ? "останавливаюсь" : "работаю"}
             </Badge>
+          ) : progress?.cancelled ? (
+            <Badge tone="warning" icon="block">
+              остановлено
+            </Badge>
+          ) : (progress?.failed ?? 0) > 0 ? (
+            <Badge tone="error" icon="error">
+              с ошибками
+            </Badge>
           ) : (
             <Badge tone="success" icon="task_alt">
               завершено
