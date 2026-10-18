@@ -1,0 +1,92 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Тег, под которым собрать релиз (например v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+            label: windows
+          - platform: ubuntu-22.04
+            args: ""
+            label: linux
+
+    runs-on: ${{ matrix.platform }}
+    name: ${{ matrix.label }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --release
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      # tauri-action builds the bundles and attaches them to the release of the
+      # tag. A draft is created so nothing goes public before the assets are
+      # actually there and verified.
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "ym-dl ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseBody: |
+            Загрузчик Яндекс.Музыки с интерфейсом на Material Design 3.
+
+            **Windows** — `.msi` (установщик) или `_x64-setup.exe` (NSIS).
+            **Linux** — `.AppImage` (просто сделайте файл исполняемым и запустите)
+            или `.deb`.
+
+            Приложение портативное: настройки, токен и профиль лежат в папке
+            `ym-dl-data` рядом с исполняемым файлом.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

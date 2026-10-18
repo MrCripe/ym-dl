@@ -10,5 +10,7 @@ _extract/*.log
 # Runtime state written next to the portable binary.
 src-tauri/target/release/webview/
 src-tauri/target/release/config/
+ym-dl-data/
+ym-dl.log
 .DS_Store
 Thumbs.db
