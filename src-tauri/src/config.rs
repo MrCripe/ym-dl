@@ -113,11 +113,48 @@ pub fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-pub fn config_dir() -> PathBuf {
-    if let Some(dirs) = ProjectDirs::from(APP_DIR_QUALIFIER, APP_DIR_ORG, APP_DIR_NAME) {
-        return dirs.config_dir().to_path_buf();
+/// True when `dir` exists and a file can actually be created in it. Creating the
+/// directory is not enough: on this kind of machine the folder exists and is
+/// listed as writable while every write still fails with access denied.
+pub fn dir_writable(dir: &Path) -> bool {
+    if fs::create_dir_all(dir).is_err() {
+        return false;
     }
-    home_dir().join(".config").join(APP_DIR_NAME)
+    let probe = dir.join(".ym-dl-write-test");
+    match fs::write(&probe, b"1") {
+        Ok(()) => {
+            let _ = fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Directory of the running executable: the one place that is always writable
+/// for a portable build.
+pub fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+}
+
+pub fn config_dir() -> PathBuf {
+    let primary = ProjectDirs::from(APP_DIR_QUALIFIER, APP_DIR_ORG, APP_DIR_NAME)
+        .map(|dirs| dirs.config_dir().to_path_buf())
+        .unwrap_or_else(|| home_dir().join(".config").join(APP_DIR_NAME));
+    if dir_writable(&primary) {
+        return primary;
+    }
+    // A locked-down profile still has to be able to store its settings.
+    let mut fallbacks = Vec::new();
+    if let Some(dir) = exe_dir() {
+        fallbacks.push(dir.join("config"));
+    }
+    fallbacks.push(std::env::temp_dir().join(APP_DIR_NAME));
+    fallbacks
+        .into_iter()
+        .find(|dir| dir_writable(dir))
+        .unwrap_or(primary)
 }
 
 pub fn config_path() -> PathBuf {
