@@ -1,6 +1,6 @@
 [package]
 name = "ym-dl"
-version = "1.0.0"
+version = "1.0.1"
 description = "Загрузчик Яндекс.Музыки"
 authors = ["ym-dl"]
 edition = "2021"

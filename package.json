@@ -1,7 +1,7 @@
 {
   "name": "ym-dl",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "Загрузчик Яндекс.Музыки с Material Design 3 интерфейсом",
   "scripts": {
