@@ -7,6 +7,8 @@ use std::process::Command;
 use std::time::Duration;
 
 const FFMPEG_RELEASES: &str = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest";
+/// Where this app publishes its own releases.
+const APP_REPO: &str = "MrCripe/ym-dl";
 
 fn version_tuple(text: &str) -> Vec<u64> {
     text.split(|ch: char| !ch.is_ascii_digit())
@@ -32,7 +34,9 @@ fn ffmpeg_version() -> String {
     };
     let mut command = Command::new(path);
     command.arg("-version");
-    match command.output() {
+    // Without this a console window flashes on every update check, and the check
+    // runs at startup.
+    match ffmpeg::hidden(&mut command).output() {
         Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
             .lines()
             .next()
@@ -82,41 +86,31 @@ async fn latest_release_tag(repo: &str) -> Result<String> {
         .to_string())
 }
 
-pub async fn check_updates(app_version: &str, repo: &str) -> Vec<UpdateEntry> {
+pub async fn check_updates(app_version: &str) -> Vec<UpdateEntry> {
     let mut entries = Vec::new();
 
-    if repo.trim().is_empty() {
-        entries.push(UpdateEntry {
+    match latest_release_tag(APP_REPO).await {
+        Ok(tag) if !tag.is_empty() => entries.push(UpdateEntry {
             name: "Приложение".into(),
             installed: app_version.to_string(),
-            latest: "—".into(),
+            latest: tag.clone(),
+            newer: newer(&tag, app_version),
+            detail: format!("github.com/{APP_REPO}/releases"),
+        }),
+        Ok(_) => entries.push(UpdateEntry {
+            name: "Приложение".into(),
+            installed: app_version.to_string(),
+            latest: "нет релизов".into(),
             newer: false,
-            detail: "Репозиторий для проверки обновлений не задан в настройках.".into(),
-        });
-    } else {
-        match latest_release_tag(repo.trim()).await {
-            Ok(tag) if !tag.is_empty() => entries.push(UpdateEntry {
-                name: "Приложение".into(),
-                installed: app_version.to_string(),
-                latest: tag.clone(),
-                newer: newer(&tag, app_version),
-                detail: format!("github.com/{repo}"),
-            }),
-            Ok(_) => entries.push(UpdateEntry {
-                name: "Приложение".into(),
-                installed: app_version.to_string(),
-                latest: "нет релизов".into(),
-                newer: false,
-                detail: format!("github.com/{repo}"),
-            }),
-            Err(error) => entries.push(UpdateEntry {
-                name: "Приложение".into(),
-                installed: app_version.to_string(),
-                latest: "недоступно".into(),
-                newer: false,
-                detail: format!("GitHub не ответил: {error:#}"),
-            }),
-        }
+            detail: format!("github.com/{APP_REPO}/releases"),
+        }),
+        Err(error) => entries.push(UpdateEntry {
+            name: "Приложение".into(),
+            installed: app_version.to_string(),
+            latest: "недоступно".into(),
+            newer: false,
+            detail: format!("GitHub не ответил: {error:#}"),
+        }),
     }
 
     let installed = ffmpeg_version();
@@ -175,6 +169,14 @@ mod tests {
     fn version_tuple_ignores_prefixes() {
         assert_eq!(version_tuple("autobuild-2026-01-01-12-00"), vec![2026, 1, 1, 12]);
         assert_eq!(version_tuple("n7.1"), vec![7, 1]);
+    }
+
+    /// The app tags its releases as `v1.0.1` while the running build reports
+    /// `1.0.1`, so the same version must not look like an update.
+    #[test]
+    fn a_tagged_release_of_the_same_version_is_not_an_update() {
+        assert!(!newer("v1.0.1", "1.0.1"));
+        assert!(newer("v1.0.2", "1.0.1"));
     }
 
     /// The ffmpeg check used to claim an update on every launch, because the

@@ -184,6 +184,156 @@ impl TagPayload<'_> {
 }
 
 pub fn write_tags(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()> {
+    // lofty rewrites the MP4 `moov` atom but does not shift the `stco` chunk
+    // offsets when the atom grows, so every sample points a few hundred bytes
+    // early and the file no longer decodes. ffmpeg re-muxes the stream and keeps
+    // the table consistent, so MP4 goes through it whenever it is installed.
+    let is_mp4 = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "m4a" | "mp4" | "m4b"))
+        .unwrap_or(false);
+    if is_mp4 && crate::ffmpeg::available() {
+        write_tags_ffmpeg(path, payload)
+    } else {
+        write_tags_lofty(path, payload)
+    }
+}
+
+/// Tag names ffmpeg maps onto the MP4 `ilst` box.
+fn metadata_pairs(payload: &TagPayload<'_>) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut push = |key: &str, value: &str| {
+        if !value.trim().is_empty() {
+            pairs.push((key.to_string(), value.to_string()));
+        }
+    };
+    push("title", &payload.title);
+    push("artist", &join_artists(&payload.artist, payload.compatibility_level));
+    push(
+        "album_artist",
+        &join_artists(&payload.album_artist, payload.compatibility_level),
+    );
+    push("album", &payload.album);
+    if let Some(year) = payload.year {
+        push("date", &year.to_string());
+    }
+    if let Some(number) = payload.track_number {
+        push("track", &number.to_string());
+    }
+    if let Some(disc) = payload.disc_number {
+        push("disc", &disc.to_string());
+    }
+    if let Some(genre) = payload.genre.as_deref() {
+        push("genre", genre);
+    }
+    if let Some(lyrics) = payload.lyrics.as_deref() {
+        push("lyrics", lyrics);
+    }
+    push("comment", &payload.url);
+    pairs
+}
+
+/// Writes tags by re-muxing with ffmpeg: the audio is copied, never re-encoded.
+fn write_tags_ffmpeg(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()> {
+    use std::process::Command;
+    let ffmpeg = crate::ffmpeg::ffmpeg_path()
+        .ok_or_else(|| anyhow::anyhow!("ffmpeg не найден"))?;
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_else(|| "track".into());
+
+    // The cover has to be a real file on disk for ffmpeg to read it.
+    let cover_path = payload.cover.as_ref().map(|bytes| {
+        let is_png = bytes.starts_with(&[0x89, b'P', b'N', b'G']);
+        let name = if is_png { ".ym-dl-cover.png" } else { ".ym-dl-cover.jpg" };
+        let cover = dir.join(name);
+        std::fs::write(&cover, bytes).map(|()| cover)
+    });
+    let cover_path = match cover_path {
+        Some(Ok(cover)) => Some(cover),
+        Some(Err(error)) => {
+            crate::startup_log::write(&format!("обложка не записалась: {error}"));
+            None
+        }
+        None => None,
+    };
+
+    let output = path.with_file_name(format!(".{stem}.tagged{ext}",
+        ext = path.extension().and_then(|e| e.to_str()).map(|e| format!(".{e}")).unwrap_or_default()));
+
+    let mut command = Command::new(&ffmpeg);
+    command.args(["-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-i"]);
+    command.arg(path);
+    if let Some(cover) = &cover_path {
+        command.arg("-i").arg(cover);
+    }
+    command.args(["-map", "0:a"]);
+    if cover_path.is_some() {
+        command.args(["-map", "1:v", "-c:v", "copy", "-disposition:v", "attached_pic"]);
+    }
+    command.args(["-c:a", "copy", "-map_metadata", "0"]);
+    for (key, value) in metadata_pairs(payload) {
+        command.arg("-metadata").arg(format!("{key}={value}"));
+    }
+    command.arg(&output);
+
+    let run = crate::ffmpeg::hidden(&mut command)
+        .output()
+        .map_err(|error| anyhow::anyhow!("ffmpeg не запустился: {error}"))?;
+    if let Some(cover) = &cover_path {
+        let _ = std::fs::remove_file(cover);
+    }
+    if !run.status.success() || !output.is_file() {
+        let _ = std::fs::remove_file(&output);
+        anyhow::bail!(
+            "ffmpeg не записал теги: {}",
+            String::from_utf8_lossy(&run.stderr).trim()
+        );
+    }
+    // Only replace the original once the new file is known to decode.
+    if !crate::ffmpeg::decodes(&output) {
+        let _ = std::fs::remove_file(&output);
+        anyhow::bail!("файл после записи тегов перестал читаться");
+    }
+    std::fs::rename(&output, path)?;
+    Ok(())
+}
+
+fn write_tags_lofty(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()> {
+    // Work on a copy: if the tagger damages the container the original audio is
+    // still intact and can be kept instead of shipping a file that will not play.
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| format!(".{ext}"))
+        .unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_else(|| "track".into());
+    let scratch = path.with_file_name(format!(".{stem}.tagging{extension}"));
+    std::fs::copy(path, &scratch)?;
+    let result = tag_in_place_lofty(&scratch, payload);
+    match result {
+        Ok(()) => {
+            if crate::ffmpeg::available() && !crate::ffmpeg::decodes(&scratch) {
+                let _ = std::fs::remove_file(&scratch);
+                anyhow::bail!("файл после записи тегов перестал читаться");
+            }
+            std::fs::rename(&scratch, path)?;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&scratch);
+            Err(error)
+        }
+    }
+}
+
+fn tag_in_place_lofty(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()> {
     // lofty guesses the container from the extension. A name it does not
     // recognise makes `read()` fail with UnknownFormat, and then every tag —
     // cover and lyrics included — is silently dropped. Fall back to sniffing the
@@ -362,15 +512,22 @@ mod tag_tests {
 
     /// A real MP4 with a real audio stream, so the tagger meets the same file the
     /// download engine produces. Returns `None` when ffmpeg is not installed.
-    fn make_m4a(dir: &Path) -> Option<PathBuf> {
-        let path = dir.join("source.m4a");
-        let status = Command::new("ffmpeg")
+    ///
+    /// `faststart` puts `moov` before `mdat`, which is the layout Yandex serves and
+    /// the one a tagger can corrupt by growing `moov` without shifting the chunk
+    /// offsets. The default layout hides that bug, so both are exercised.
+    fn make_m4a(dir: &Path, faststart: bool) -> Option<PathBuf> {
+        let name = if faststart { "source-front.m4a" } else { "source.m4a" };
+        let path = dir.join(name);
+        let mut command = Command::new("ffmpeg");
+        command
             .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
             .args(["-i", "anullsrc=r=44100:cl=stereo", "-t", "0.2"])
-            .args(["-c:a", "aac", "-b:a", "64k"])
-            .arg(&path)
-            .status()
-            .ok()?;
+            .args(["-c:a", "aac", "-b:a", "64k"]);
+        if faststart {
+            command.args(["-movflags", "+faststart"]);
+        }
+        let status = command.arg(&path).status().ok()?;
         status.success().then_some(path)
     }
 
@@ -386,25 +543,8 @@ mod tag_tests {
         PNG.to_vec()
     }
 
-    /// The bug that lost every tag: the engine tagged a file named `X.m4a.part`,
-    /// and lofty guesses the container from the extension.
-    #[test]
-    fn tags_survive_a_part_suffixed_name() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join(format!("ymdl-tags-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let Some(source) = make_m4a(&dir) else {
-            eprintln!("ffmpeg недоступен — тест пропущен");
-            return;
-        };
-
-        // Exactly the temporary name the download engine writes before renaming.
-        let temp = dir.join(".track.part.m4a");
-        std::fs::copy(&source, &temp).unwrap();
-
-        let payload = TagPayload {
+    fn payload_with_cover() -> TagPayload<'static> {
+        TagPayload {
             title: "Название".into(),
             artist: vec!["Артист".into()],
             album_artist: vec!["Артист".into()],
@@ -418,8 +558,27 @@ mod tag_tests {
             url: "https://music.yandex.ru/track/1".into(),
             compatibility_level: 1,
             _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// The bug that lost every tag: the engine tagged a file named `X.m4a.part`,
+    /// and lofty guesses the container from the extension.
+    #[test]
+    fn tags_survive_a_part_suffixed_name() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("ymdl-tags-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some(source) = make_m4a(&dir, false) else {
+            eprintln!("ffmpeg недоступен — тест пропущен");
+            return;
         };
-        write_tags(&temp, &payload).expect("теги должны записаться в .part.m4a");
+
+        // Exactly the temporary name the download engine writes before renaming.
+        let temp = dir.join(".track.part.m4a");
+        std::fs::copy(&source, &temp).unwrap();
+        write_tags(&temp, &payload_with_cover()).expect("теги должны записаться в .part.m4a");
 
         let summary = read_tags(&temp).expect("файл должен перечитаться");
         assert!(summary.contains("название=\"Название\""), "{summary}");
@@ -432,5 +591,58 @@ mod tag_tests {
         assert!(summary.contains("лирикс=да"), "лирикс потерялся: {summary}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Yandex serves `moov` before `mdat` with no padding between them. A tagger
+    /// that grows `moov` without shifting the chunk offsets leaves a file that
+    /// still reports a codec and a duration but plays noise, so the guard that
+    /// rejects such a file is what keeps the audio intact.
+    #[test]
+    fn a_shifted_media_atom_is_rejected() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("ymdl-play-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some(source) = make_m4a(&dir, true) else {
+            eprintln!("ffmpeg недоступен — тест пропущен");
+            return;
+        };
+        let intact = dir.join("intact.m4a");
+        std::fs::copy(&source, &intact).unwrap();
+        assert!(crate::ffmpeg::decodes(&intact), "целый файл должен декодироваться");
+
+        // Reproduce the damage: push the media payload forward the way an
+        // unpatched chunk-offset table does, leaving every sample misaligned.
+        let broken = dir.join("broken.m4a");
+        let bytes = std::fs::read(&intact).unwrap();
+        let media = find_atom(&bytes, b"mdat").expect("в файле должен быть mdat");
+        let mut damaged = Vec::with_capacity(bytes.len() + 329);
+        damaged.extend_from_slice(&bytes[..media]);
+        damaged.extend_from_slice(&[0u8; 329]);
+        damaged.extend_from_slice(&bytes[media..]);
+        std::fs::write(&broken, &damaged).unwrap();
+        assert!(
+            !crate::ffmpeg::decodes(&broken),
+            "сдвинутый mdat должен считаться битым"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Byte offset of a top-level MP4 atom, or `None` when it is absent.
+    fn find_atom(bytes: &[u8], name: &[u8; 4]) -> Option<usize> {
+        let mut offset = 0usize;
+        while offset + 8 <= bytes.len() {
+            let size = u32::from_be_bytes(bytes[offset..offset + 4].try_into().ok()?) as usize;
+            if size < 8 {
+                return None;
+            }
+            if &bytes[offset + 4..offset + 8] == name {
+                return Some(offset);
+            }
+            offset = offset.checked_add(size)?;
+        }
+        None
     }
 }

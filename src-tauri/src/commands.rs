@@ -243,8 +243,8 @@ pub fn stop_download(state: State<'_, AppState>) -> bool {
 }
 
 #[tauri::command]
-pub async fn check_updates(app_version: String, repo: String) -> Vec<UpdateEntry> {
-    updates::check_updates(&app_version, &repo).await
+pub async fn check_updates(app_version: String) -> Vec<UpdateEntry> {
+    updates::check_updates(&app_version).await
 }
 
 #[tauri::command]

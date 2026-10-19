@@ -198,6 +198,12 @@ pub async fn run_live_check(track_id: &str, quality: u8) -> LiveReport {
             if had_lyrics && !summary.contains("лирикс=да") {
                 return LiveReport { ok: false, lines };
             }
+            // Tags are worthless on a file that no longer plays.
+            if !crate::ffmpeg::decodes(&final_path) {
+                lines.push("файл после записи тегов не декодируется".to_string());
+                return LiveReport { ok: false, lines };
+            }
+            lines.push("файл декодируется целиком".to_string());
         }
         Err(error) => {
             lines.push(format!("файл не перечитался: {error:#}"));

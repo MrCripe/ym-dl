@@ -127,8 +127,8 @@ export const api = {
   likes: () => call<SourceInfo>("load_likes"),
   start: (trackIds: string[]) => call<void>("start_download", { trackIds }),
   stop: () => call<boolean>("stop_download"),
-  updates: (appVersion: string, repo: string) =>
-    call<UpdateEntry[]>("check_updates", { appVersion, repo }),
+  updates: (appVersion: string) =>
+    call<UpdateEntry[]>("check_updates", { appVersion }),
   environment: () => call<EnvironmentInfo>("environment"),
   postProcess: () => call<PostProcessStats>("post_process"),
   probeLossless: () => call<AccountInfo>("probe_lossless"),

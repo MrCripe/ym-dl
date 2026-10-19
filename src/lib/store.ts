@@ -131,7 +131,7 @@ export const useApp = create<State>((set, get) => ({
     if (settings.checkUpdates) {
       api
         .environment()
-        .then((env) => api.updates(env.appVersion, ""))
+        .then((env) => api.updates(env.appVersion))
         .then((entries) => {
           const stale = entries.filter((entry) => entry.newer);
           if (stale.length) {

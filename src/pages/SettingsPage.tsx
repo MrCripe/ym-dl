@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, type EnvironmentInfo, type UpdateEntry } from "../lib/api";
 import { useApp } from "../lib/store";
 import { Badge, Button, Icon, Segmented, Slider, Switch, TextField } from "../components/ui";
@@ -32,7 +33,7 @@ export default function SettingsPage() {
   const checkUpdates = async () => {
     setChecking(true);
     try {
-      const list = await api.updates(env?.appVersion ?? "0.0.0", "");
+      const list = await api.updates(env?.appVersion ?? "0.0.0");
       setUpdates(list);
     } catch (error) {
       toast(String((error as Error).message), "error");
@@ -524,6 +525,16 @@ export default function SettingsPage() {
               <Badge tone={entry.newer ? "warning" : "success"}>
                 {entry.newer ? `доступно ${entry.latest}` : "актуально"}
               </Badge>
+              {entry.newer && entry.name === "Приложение" && (
+                <Button
+                  variant="tonal"
+                  size="compact"
+                  icon="download"
+                  onClick={() => openUrl("https://github.com/MrCripe/ym-dl/releases/latest")}
+                >
+                  Скачать
+                </Button>
+              )}
             </div>
           ))}
         </Section>

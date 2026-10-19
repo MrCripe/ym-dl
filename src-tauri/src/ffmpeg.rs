@@ -11,14 +11,14 @@ use std::process::Command;
 pub const BACKUP_DIR: &str = "_old_m4a";
 
 #[cfg(windows)]
-fn hidden(command: &mut Command) -> &mut Command {
+pub(crate) fn hidden(command: &mut Command) -> &mut Command {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     command.creation_flags(CREATE_NO_WINDOW)
 }
 
 #[cfg(not(windows))]
-fn hidden(command: &mut Command) -> &mut Command {
+pub(crate) fn hidden(command: &mut Command) -> &mut Command {
     command
 }
 
@@ -58,6 +58,26 @@ pub fn ffprobe_path() -> Option<PathBuf> {
 
 pub fn available() -> bool {
     ffmpeg_path().is_some() && ffprobe_path().is_some()
+}
+
+/// True when the whole audio stream decodes without a single error.
+///
+/// Probing is not enough: a container whose chunk offsets no longer match the
+/// media still reports a codec name and a duration, yet plays silence or noise.
+/// Only a full decode catches that, so every tag rewrite is checked this way
+/// before it replaces the original file.
+pub fn decodes(path: &Path) -> bool {
+    let Some(ffmpeg) = ffmpeg_path() else {
+        return false;
+    };
+    let mut command = Command::new(ffmpeg);
+    command.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-xerror", "-i"]);
+    command.arg(path);
+    command.args(["-f", "null", "-"]);
+    let Ok(output) = hidden(&mut command).output() else {
+        return false;
+    };
+    output.status.success() && output.stderr.is_empty()
 }
 
 /// Returns `"converted"`, `"exists"` or `"failed"`.
