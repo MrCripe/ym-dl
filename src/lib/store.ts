@@ -45,6 +45,7 @@ type State = {
 };
 
 let toastId = 0;
+let saveTimer = 0;
 
 export const useApp = create<State>((set, get) => ({
   ready: false,
@@ -110,7 +111,13 @@ export const useApp = create<State>((set, get) => ({
     if (hasToken) {
       api
         .probeLossless()
-        .then((account) => set({ account, needsToken: false }))
+        .then(async (account) => {
+          set({ account, needsToken: false });
+          // The backend fills the likes username from the account, so pull the
+          // settings again or the field stays empty until a restart.
+          const fresh = await api.settings().catch(() => null);
+          if (fresh) set({ settings: fresh, settingsDraft: fresh });
+        })
         .catch((error) => {
           // A rejected token must send the user back to the token screen
           // instead of leaving an empty, unusable shell.
@@ -149,12 +156,21 @@ export const useApp = create<State>((set, get) => ({
 
   setAccount: (account) => set({ account }),
 
-  patchSettings: (values) =>
+  patchSettings: (values) => {
     set((current) => {
       const base = current.settingsDraft ?? current.settings;
       if (!base) return {};
       return { settingsDraft: { ...base, ...values }, settingsDirty: true };
-    }),
+    });
+    // Autosave: one write shortly after the last change, so dragging a slider
+    // does not hammer the disk but nothing is ever left unsaved.
+    window.clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => {
+      void get()
+        .saveSettingsDraft()
+        .catch((error) => get().toast(String((error as Error).message), "error"));
+    }, 400);
+  },
 
   saveSettingsDraft: async () => {
     const draft = get().settingsDraft ?? get().settings;

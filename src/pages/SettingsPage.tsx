@@ -17,7 +17,6 @@ export default function SettingsPage() {
   const draft = useApp((state) => state.settingsDraft);
   const dirty = useApp((state) => state.settingsDirty);
   const patch = useApp((state) => state.patchSettings);
-  const persist = useApp((state) => state.saveSettingsDraft);
   const resetToken = useApp((state) => state.resetToken);
   const toast = useApp((state) => state.toast);
   const account = useApp((state) => state.account);
@@ -29,15 +28,6 @@ export default function SettingsPage() {
   useEffect(() => {
     api.environment().then(setEnv).catch(() => undefined);
   }, []);
-
-  const save = async () => {
-    try {
-      await persist();
-      toast("Настройки сохранены", "success");
-    } catch (error) {
-      toast(String((error as Error).message), "error");
-    }
-  };
 
   const checkUpdates = async () => {
     setChecking(true);
@@ -62,10 +52,15 @@ export default function SettingsPage() {
             <p>Всё, что влияет на загрузку, теги и внешний вид</p>
           </div>
           <div className="row">
-            {dirty ? <Badge tone="warning">есть изменения</Badge> : null}
-            <Button icon="save" onClick={save} disabled={!dirty}>
-              Сохранить
-            </Button>
+            {dirty ? (
+              <Badge tone="warning" icon="sync">
+                сохраняю…
+              </Badge>
+            ) : (
+              <Badge tone="success" icon="task_alt">
+                сохранено
+              </Badge>
+            )}
           </div>
         </div>
 

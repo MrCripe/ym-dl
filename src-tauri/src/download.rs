@@ -252,7 +252,15 @@ impl Shared {
             None => body,
         };
 
-        let temp = final_path.with_extension(format!("{}.part", extension.trim_start_matches('.')));
+        // Keep the real extension last: the tagger and ffprobe both identify the
+        // container by it, and `X.m4a.part` reads as an unknown format.
+        let temp = final_path.with_file_name(format!(
+            ".{}.part{extension}",
+            final_path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().to_string())
+                .unwrap_or_default()
+        ));
         if let Err(error) = std::fs::write(&temp, &bytes) {
             self.settle(index, "failed", &format!("не удалось записать файл: {error}"), "");
             return;

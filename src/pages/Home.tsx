@@ -9,6 +9,7 @@ export default function Home() {
   const resolveProgress = useApp((state) => state.resolveProgress);
   const downloading = useApp((state) => state.downloading);
   const settings = useApp((state) => state.settings);
+  const account = useApp((state) => state.account);
   const resolve = useApp((state) => state.resolve);
   const loadLikes = useApp((state) => state.loadLikes);
   const toggleTrack = useApp((state) => state.toggleTrack);
@@ -35,9 +36,9 @@ export default function Home() {
             <h1>Главная</h1>
             <p>Вставьте ссылку или скачайте любимые треки</p>
           </div>
-          {settings?.username ? (
+          {account?.name || settings?.username ? (
             <Badge tone="secondary" icon="person">
-              {settings.username}
+              {account?.name || settings?.username}
             </Badge>
           ) : null}
         </div>

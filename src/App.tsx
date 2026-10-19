@@ -20,6 +20,10 @@ export default function App() {
   const page = useApp((state) => state.page);
   const setPage = useApp((state) => state.setPage);
   const settings = useApp((state) => state.settings);
+  // The draft is what the settings page edits: applying it live makes a theme or
+  // accent click visible immediately instead of only after a save.
+  const settingsDraft = useApp((state) => state.settingsDraft);
+  const appearance = settingsDraft ?? settings;
   const downloading = useApp((state) => state.downloading);
   const init = useApp((state) => state.init);
   const toasts = useApp((state) => state.toasts);
@@ -30,19 +34,19 @@ export default function App() {
   }, [init]);
 
   useEffect(() => {
-    if (!settings) return;
+    if (!appearance) return;
     const root = document.documentElement;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const apply = () => {
       const theme =
-        settings.theme === "system" ? (media.matches ? "dark" : "light") : settings.theme;
+        appearance.theme === "system" ? (media.matches ? "dark" : "light") : appearance.theme;
       root.dataset.theme = theme;
-      root.dataset.accent = settings.accent;
+      root.dataset.accent = appearance.accent;
     };
     apply();
     media.addEventListener("change", apply);
     return () => media.removeEventListener("change", apply);
-  }, [settings]);
+  }, [appearance]);
 
   // The window is undecorated, so every screen needs the custom titlebar —
   // otherwise the token wizard and the error screen cannot be closed or dragged.

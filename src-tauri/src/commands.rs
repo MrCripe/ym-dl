@@ -101,7 +101,32 @@ pub async fn check_token(state: State<'_, AppState>, token: String) -> Result<Ac
         .map_err(|error| format!("{error:#}"))?;
     config::write_token(&trimmed).map_err(|error| format!("{error:#}"))?;
     state.reset_client();
+    remember_username(&state, &info);
     Ok(info)
+}
+
+/// Fills the "Скачать любимые" username from the account, so the user does not
+/// have to copy it by hand. A login is preferred; a token without one gets the
+/// uid, which the likes endpoint accepts just as well.
+fn remember_username(state: &State<'_, AppState>, info: &AccountInfo) {
+    if !state.settings().username.trim().is_empty() {
+        return;
+    }
+    let name = if !info.login.is_empty() {
+        info.login.clone()
+    } else {
+        info.uid.clone()
+    };
+    if name.is_empty() {
+        return;
+    }
+    let mut settings = state.settings();
+    settings.username = name;
+    if config::save_settings(&settings).is_ok() {
+        if let Ok(mut slot) = state.settings.lock() {
+            *slot = settings;
+        }
+    }
 }
 
 #[tauri::command]
@@ -254,5 +279,10 @@ pub async fn post_process(state: State<'_, AppState>) -> Result<ffmpeg::PostProc
 #[tauri::command]
 pub async fn probe_lossless(state: State<'_, AppState>) -> Result<AccountInfo, String> {
     let client = state.client().map_err(|error| format!("{error:#}"))?;
-    api::check_token(&client).await.map_err(|error| format!("{error:#}"))
+    let info = api::check_token(&client)
+        .await
+        .map_err(|error| format!("{error:#}"))?;
+    // Startup runs this, so the username is filled even for an existing install.
+    remember_username(&state, &info);
+    Ok(info)
 }

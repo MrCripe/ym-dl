@@ -3,6 +3,16 @@
    never needs a colour library at runtime. */
 
 :root {
+  /* Fallback accent: before React sets data-accent (first paint, or a config
+     with an unknown value) the palette must still resolve, otherwise every
+     --primary is empty and the UI renders colourless. */
+  --accent-primary-light: #6750a4;
+  --accent-container-light: #eaddff;
+  --accent-on-container-light: #21005d;
+  --accent-primary-dark: #d0bcff;
+  --accent-container-dark: #4f378b;
+  --accent-on-container-dark: #eaddff;
+
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --ease-emphasized: cubic-bezier(0.05, 0.7, 0.1, 1);
   --ease-decelerate: cubic-bezier(0, 0, 0, 1);
@@ -33,7 +43,6 @@
 }
 
 :root[data-accent="violet"] {
-  --accent-source: 6750a4;
   --accent-primary-light: #6750a4;
   --accent-container-light: #eaddff;
   --accent-on-container-light: #21005d;

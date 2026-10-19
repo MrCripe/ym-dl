@@ -184,7 +184,17 @@ impl TagPayload<'_> {
 }
 
 pub fn write_tags(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()> {
-    let mut tagged = Probe::open(path)?.read()?;
+    // lofty guesses the container from the extension. A name it does not
+    // recognise makes `read()` fail with UnknownFormat, and then every tag —
+    // cover and lyrics included — is silently dropped. Fall back to sniffing the
+    // content so a temporary file name can never lose the metadata.
+    let probe = Probe::open(path)?;
+    let probe = if probe.file_type().is_none() {
+        probe.guess_file_type()?
+    } else {
+        probe
+    };
+    let mut tagged = probe.read()?;
     let tag_type = tagged.primary_tag_type();
     let tag = tagged.primary_tag_mut();
     let tag = match tag {
@@ -241,6 +251,33 @@ pub fn write_tags(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()> {
     }
     tagged.save_to_path(path, WriteOptions::default())?;
     Ok(())
+}
+
+/// Reads back what a finished file actually contains. Used by the live check and
+/// by tests: writing tags is only useful if they survive on disk.
+pub fn read_tags(path: &Path) -> anyhow::Result<String> {
+    let probe = Probe::open(path)?;
+    let probe = if probe.file_type().is_none() {
+        probe.guess_file_type()?
+    } else {
+        probe
+    };
+    let tagged = probe.read()?;
+    let Some(tag) = tagged.primary_tag() else {
+        anyhow::bail!("в файле нет тега");
+    };
+    let lyrics = tag.get_string(&ItemKey::Lyrics).unwrap_or("");
+    Ok(format!(
+        "название={:?} исполнитель={:?} альбом={:?} год={:?} номер={:?} жанр={:?} обложка={} лирикс={}",
+        tag.title().unwrap_or_default(),
+        tag.artist().unwrap_or_default(),
+        tag.album().unwrap_or_default(),
+        tag.year().map(|year| year.to_string()).unwrap_or_default(),
+        tag.track().map(|track| track.to_string()).unwrap_or_default(),
+        tag.genre().unwrap_or_default(),
+        tag.pictures().len(),
+        if lyrics.is_empty() { "нет" } else { "да" }
+    ))
 }
 
 fn join_artists(artists: &[String], compatibility_level: u8) -> String {
@@ -315,5 +352,85 @@ mod tests {
         assert_eq!(extension_for("MP4", "FLAC"), ".m4a");
         assert_eq!(extension_for("MP4", "AAC"), ".m4a");
         assert_eq!(extension_for("MP3", "MP3"), ".mp3");
+    }
+}
+
+#[cfg(test)]
+mod tag_tests {
+    use super::*;
+    use std::process::Command;
+
+    /// A real MP4 with a real audio stream, so the tagger meets the same file the
+    /// download engine produces. Returns `None` when ffmpeg is not installed.
+    fn make_m4a(dir: &Path) -> Option<PathBuf> {
+        let path = dir.join("source.m4a");
+        let status = Command::new("ffmpeg")
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args(["-i", "anullsrc=r=44100:cl=stereo", "-t", "0.2"])
+            .args(["-c:a", "aac", "-b:a", "64k"])
+            .arg(&path)
+            .status()
+            .ok()?;
+        status.success().then_some(path)
+    }
+
+    fn tiny_png() -> Vec<u8> {
+        // 1x1 PNG, enough for lofty to treat the payload as a real picture.
+        const PNG: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
+            b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, b'I', b'D', b'A', b'T', 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82,
+        ];
+        PNG.to_vec()
+    }
+
+    /// The bug that lost every tag: the engine tagged a file named `X.m4a.part`,
+    /// and lofty guesses the container from the extension.
+    #[test]
+    fn tags_survive_a_part_suffixed_name() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("ymdl-tags-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some(source) = make_m4a(&dir) else {
+            eprintln!("ffmpeg недоступен — тест пропущен");
+            return;
+        };
+
+        // Exactly the temporary name the download engine writes before renaming.
+        let temp = dir.join(".track.part.m4a");
+        std::fs::copy(&source, &temp).unwrap();
+
+        let payload = TagPayload {
+            title: "Название".into(),
+            artist: vec!["Артист".into()],
+            album_artist: vec!["Артист".into()],
+            album: "Альбом".into(),
+            year: Some(2026),
+            track_number: Some(3),
+            disc_number: Some(1),
+            genre: Some("rock".into()),
+            cover: Some(tiny_png()),
+            lyrics: Some("строка текста".into()),
+            url: "https://music.yandex.ru/track/1".into(),
+            compatibility_level: 1,
+            _marker: std::marker::PhantomData,
+        };
+        write_tags(&temp, &payload).expect("теги должны записаться в .part.m4a");
+
+        let summary = read_tags(&temp).expect("файл должен перечитаться");
+        assert!(summary.contains("название=\"Название\""), "{summary}");
+        assert!(summary.contains("исполнитель=\"Артист\""), "{summary}");
+        assert!(summary.contains("альбом=\"Альбом\""), "{summary}");
+        assert!(summary.contains("год=\"2026\""), "{summary}");
+        assert!(summary.contains("номер=\"3\""), "{summary}");
+        assert!(summary.contains("жанр=\"rock\""), "{summary}");
+        assert!(summary.contains("обложка=1"), "обложка потерялась: {summary}");
+        assert!(summary.contains("лирикс=да"), "лирикс потерялся: {summary}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

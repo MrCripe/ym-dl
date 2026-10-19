@@ -129,19 +129,80 @@ pub async fn run_live_check(track_id: &str, quality: u8) -> LiveReport {
         .unwrap_or_else(std::env::temp_dir)
         .join("live-check");
     let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join(format!("{}{extension}", item.id));
-    match std::fs::write(&path, &bytes) {
-        Ok(()) => lines.push(format!("записано: {}", path.display())),
-        Err(error) => {
-            lines.push(format!("запись упала: {error}"));
-            return LiveReport { ok: false, lines };
+    let final_path = dir.join(format!("{}{extension}", item.id));
+    // Exactly the naming the download engine uses: the real extension has to stay
+    // last or the tagger cannot identify the container.
+    let temp = final_path.with_file_name(format!(".{}.part{extension}", item.id));
+    if let Err(error) = std::fs::write(&temp, &bytes) {
+        lines.push(format!("запись упала: {error}"));
+        return LiveReport { ok: false, lines };
+    }
+    lines.push(format!("записано: {}", temp.display()));
+
+    let mut payload = audio::TagPayload::from_track(
+        track,
+        format!("https://music.yandex.ru/track/{track_id}"),
+        1,
+    );
+
+    // Cover, same call the download engine makes.
+    if let Some(uri) = track
+        .albums
+        .first()
+        .and_then(|album| album.cover_uri.clone())
+        .or_else(|| track.cover_uri.clone())
+    {
+        match client.cover(&uri, "400x400").await {
+            Ok(bytes) => {
+                lines.push(format!("обложка скачана: {} байт", bytes.len()));
+                payload.cover = Some(bytes);
+            }
+            Err(error) => lines.push(format!("обложка не скачалась: {error:#}")),
         }
+    } else {
+        lines.push("у трека нет coverUri".to_string());
     }
 
-    let payload = audio::TagPayload::from_track(track, String::new(), 1);
-    match audio::write_tags(&path, &payload) {
-        Ok(()) => lines.push("теги записаны".to_string()),
-        Err(error) => lines.push(format!("теги не записались: {error:#}")),
+    // Lyrics, same call the download engine makes. "No lyrics found" is a normal
+    // server answer for a track without a text, not a failure.
+    match client.lyrics(track_id, "TEXT").await {
+        Ok(text) => {
+            lines.push(format!("лирикс скачан: {} символов", text.chars().count()));
+            payload.lyrics = Some(text);
+        }
+        Err(error) if format!("{error:#}").contains("No lyrics found") => {
+            lines.push("лирикса у трека нет на сервере — это нормально".to_string());
+        }
+        Err(error) => lines.push(format!("лирикс не скачался: {error:#}")),
+    }
+
+    if let Err(error) = audio::write_tags(&temp, &payload) {
+        lines.push(format!("теги не записались: {error:#}"));
+        return LiveReport { ok: false, lines };
+    }
+    if let Err(error) = std::fs::rename(&temp, &final_path) {
+        lines.push(format!("переименование упало: {error}"));
+        return LiveReport { ok: false, lines };
+    }
+
+    // Read the result back: writing tags is only useful if they are there.
+    let check = audio::read_tags(&final_path);
+    match check {
+        Ok(summary) => {
+            lines.push(format!("проверка файла: {summary}"));
+            // Cover must always land; lyrics only when the track has a text.
+            if !summary.contains("обложка=1") {
+                return LiveReport { ok: false, lines };
+            }
+            let had_lyrics = payload.lyrics.is_some();
+            if had_lyrics && !summary.contains("лирикс=да") {
+                return LiveReport { ok: false, lines };
+            }
+        }
+        Err(error) => {
+            lines.push(format!("файл не перечитался: {error:#}"));
+            return LiveReport { ok: false, lines };
+        }
     }
 
     LiveReport { ok: true, lines }
