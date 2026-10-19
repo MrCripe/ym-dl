@@ -49,32 +49,13 @@ fn ffmpeg_version() -> String {
     }
 }
 
-async fn latest_ffmpeg_tag() -> Option<String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(12))
-        .user_agent("ym-dl")
-        .build()
-        .ok()?;
-    let response = client.get(FFMPEG_RELEASES).send().await.ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let value: serde_json::Value = response.json().await.ok()?;
-    value
-        .get("tag_name")
-        .and_then(|tag| tag.as_str())
-        .map(|tag| tag.to_string())
-}
-
-async fn latest_release_tag(repo: &str) -> Result<String> {
+/// Newest release tag behind `url`, or an error when GitHub does not answer.
+async fn latest_tag(url: &str) -> Result<String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(12))
         .user_agent("ym-dl")
         .build()?;
-    let response = client
-        .get(format!("https://api.github.com/repos/{repo}/releases/latest"))
-        .send()
-        .await?;
+    let response = client.get(url).send().await?;
     if !response.status().is_success() {
         anyhow::bail!("HTTP {}", response.status().as_u16());
     }
@@ -86,32 +67,26 @@ async fn latest_release_tag(repo: &str) -> Result<String> {
         .to_string())
 }
 
+async fn latest_release_tag(repo: &str) -> Result<String> {
+    latest_tag(&format!("https://api.github.com/repos/{repo}/releases/latest")).await
+}
+
 pub async fn check_updates(app_version: &str) -> Vec<UpdateEntry> {
     let mut entries = Vec::new();
 
-    match latest_release_tag(APP_REPO).await {
-        Ok(tag) if !tag.is_empty() => entries.push(UpdateEntry {
-            name: "Приложение".into(),
-            installed: app_version.to_string(),
-            latest: tag.clone(),
-            newer: newer(&tag, app_version),
-            detail: format!("github.com/{APP_REPO}/releases"),
-        }),
-        Ok(_) => entries.push(UpdateEntry {
-            name: "Приложение".into(),
-            installed: app_version.to_string(),
-            latest: "нет релизов".into(),
-            newer: false,
-            detail: format!("github.com/{APP_REPO}/releases"),
-        }),
-        Err(error) => entries.push(UpdateEntry {
-            name: "Приложение".into(),
-            installed: app_version.to_string(),
-            latest: "недоступно".into(),
-            newer: false,
-            detail: format!("GitHub не ответил: {error:#}"),
-        }),
-    }
+    // Three outcomes, one entry: only the latest version and the note differ.
+    let (latest, detail) = match latest_release_tag(APP_REPO).await {
+        Ok(tag) if !tag.is_empty() => (tag, format!("github.com/{APP_REPO}/releases")),
+        Ok(_) => ("нет релизов".to_string(), format!("github.com/{APP_REPO}/releases")),
+        Err(error) => ("недоступно".to_string(), format!("GitHub не ответил: {error:#}")),
+    };
+    entries.push(UpdateEntry {
+        name: "Приложение".into(),
+        installed: app_version.to_string(),
+        newer: newer(&latest, app_version),
+        latest,
+        detail,
+    });
 
     let installed = ffmpeg_version();
     if installed.is_empty() {
@@ -123,8 +98,8 @@ pub async fn check_updates(app_version: &str) -> Vec<UpdateEntry> {
             detail: "Без ffmpeg нельзя извлечь настоящий FLAC из .m4a.".into(),
         });
     } else {
-        match latest_ffmpeg_tag().await {
-            Some(tag) => {
+        match latest_tag(FFMPEG_RELEASES).await {
+            Ok(tag) => {
                 // The BtbN tags are dates, so "newer" is unknowable here; say so
                 // instead of guessing and nagging.
                 let dated = tag.to_ascii_lowercase().starts_with("autobuild");
@@ -140,7 +115,7 @@ pub async fn check_updates(app_version: &str) -> Vec<UpdateEntry> {
                     },
                 })
             }
-            None => entries.push(UpdateEntry {
+            Err(_) => entries.push(UpdateEntry {
                 name: "ffmpeg".into(),
                 installed,
                 latest: "недоступно".into(),

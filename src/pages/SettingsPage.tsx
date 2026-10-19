@@ -530,7 +530,11 @@ export default function SettingsPage() {
                   variant="tonal"
                   size="compact"
                   icon="download"
-                  onClick={() => openUrl("https://github.com/MrCripe/ym-dl/releases/latest")}
+                  onClick={() => {
+                    void openUrl(`https://${entry.detail}/latest`).catch((error) =>
+                      toast(String((error as Error).message), "error"),
+                    );
+                  }}
                 >
                   Скачать
                 </Button>

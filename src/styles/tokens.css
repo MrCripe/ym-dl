@@ -42,14 +42,7 @@
     "Helvetica Neue", sans-serif;
 }
 
-:root[data-accent="violet"] {
-  --accent-primary-light: #6750a4;
-  --accent-container-light: #eaddff;
-  --accent-on-container-light: #21005d;
-  --accent-primary-dark: #d0bcff;
-  --accent-container-dark: #4f378b;
-  --accent-on-container-dark: #eaddff;
-}
+/* violet is the value already declared on :root, so it needs no block of its own. */
 
 :root[data-accent="blue"] {
   --accent-primary-light: #0061a4;

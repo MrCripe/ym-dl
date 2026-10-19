@@ -193,6 +193,16 @@ pub fn post_process(root: &Path, quarantine_lossy: bool) -> PostProcessStats {
             if !matches!(extension.as_str(), "m4a" | "mp3" | "flac") {
                 continue;
             }
+            // An interrupted download leaves `.name.part.m4a` behind. It carries
+            // the real extension, so it would otherwise be converted and kept as
+            // if it were a finished track.
+            let is_partial = path
+                .file_name()
+                .map(|name| name.to_string_lossy().contains(".part."))
+                .unwrap_or(false);
+            if is_partial {
+                continue;
+            }
             let codec = codec_of(&path);
             if extension == "m4a" && codec == "flac" {
                 match extract_flac(&path).as_str() {

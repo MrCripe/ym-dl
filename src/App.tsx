@@ -34,6 +34,17 @@ export default function App() {
   }, [init]);
 
   useEffect(() => {
+    // Closing with the title bar button goes through flushSettings, but the OS
+    // close button, Alt+F4 and a shutdown do not, so the pending write is also
+    // flushed when the page is going away.
+    const flush = () => {
+      void useApp.getState().flushSettings();
+    };
+    window.addEventListener("beforeunload", flush);
+    return () => window.removeEventListener("beforeunload", flush);
+  }, []);
+
+  useEffect(() => {
     if (!appearance) return;
     const root = document.documentElement;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -180,7 +191,15 @@ function WindowTitlebar({ rail = true }: { rail?: boolean }) {
       >
         <Icon name="expand_content" />
       </button>
-      <button type="button" className="window-button close" aria-label="Закрыть" onClick={() => win.close()}>
+      <button
+        type="button"
+        className="window-button close"
+        aria-label="Закрыть"
+        onClick={() => {
+          // Autosave waits 400 ms; closing sooner would drop the last edit.
+          void useApp.getState().flushSettings().finally(() => win.close());
+        }}
+      >
         <Icon name="close" />
       </button>
     </div>

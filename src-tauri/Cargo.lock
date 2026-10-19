@@ -5307,7 +5307,7 @@ dependencies = [
 
 [[package]]
 name = "ym-dl"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "aes",
  "anyhow",

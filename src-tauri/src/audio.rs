@@ -183,17 +183,37 @@ impl TagPayload<'_> {
     }
 }
 
+/// Temporary name for a track that is still being written: hidden, marked as a
+/// partial file, and ending with the real extension so the tagger and ffprobe
+/// still identify the container.
+pub fn part_path(final_path: &Path) -> PathBuf {
+    let extension = final_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| format!(".{ext}"))
+        .unwrap_or_default();
+    let stem = final_path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_default();
+    final_path.with_file_name(format!(".{stem}.part{extension}"))
+}
+
 pub fn write_tags(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()> {
     // lofty rewrites the MP4 `moov` atom but does not shift the `stco` chunk
     // offsets when the atom grows, so every sample points a few hundred bytes
     // early and the file no longer decodes. ffmpeg re-muxes the stream and keeps
-    // the table consistent, so MP4 goes through it whenever it is installed.
+    // the table consistent, so MP4 goes through it — and without ffmpeg an MP4 is
+    // left alone rather than tagged into a file that will not play.
     let is_mp4 = path
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "m4a" | "mp4" | "m4b"))
         .unwrap_or(false);
-    if is_mp4 && crate::ffmpeg::available() {
+    if is_mp4 {
+        if !crate::ffmpeg::available() {
+            anyhow::bail!("для тегов MP4 нужен ffmpeg — файл оставлен без изменений");
+        }
         write_tags_ffmpeg(path, payload)
     } else {
         write_tags_lofty(path, payload)
@@ -245,10 +265,16 @@ fn write_tags_ffmpeg(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()
         .map(|stem| stem.to_string_lossy().to_string())
         .unwrap_or_else(|| "track".into());
 
-    // The cover has to be a real file on disk for ffmpeg to read it.
+    // The cover has to be a real file on disk for ffmpeg to read it. The name is
+    // per-track: downloads run concurrently into one folder, and a shared name
+    // would let one track overwrite or delete the cover another is still reading.
     let cover_path = payload.cover.as_ref().map(|bytes| {
         let is_png = bytes.starts_with(&[0x89, b'P', b'N', b'G']);
-        let name = if is_png { ".ym-dl-cover.png" } else { ".ym-dl-cover.jpg" };
+        let name = if is_png {
+            format!(".{stem}.cover.png")
+        } else {
+            format!(".{stem}.cover.jpg")
+        };
         let cover = dir.join(name);
         std::fs::write(&cover, bytes).map(|()| cover)
     });
@@ -333,18 +359,22 @@ fn write_tags_lofty(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()>
     }
 }
 
-fn tag_in_place_lofty(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()> {
-    // lofty guesses the container from the extension. A name it does not
-    // recognise makes `read()` fail with UnknownFormat, and then every tag —
-    // cover and lyrics included — is silently dropped. Fall back to sniffing the
-    // content so a temporary file name can never lose the metadata.
+/// Opens a file for tagging. lofty guesses the container from the extension, and
+/// a name it does not recognise makes `read()` fail with UnknownFormat — which
+/// silently dropped every tag when tracks were written as `X.m4a.part`. Sniffing
+/// the content covers that case.
+fn open_tagged(path: &Path) -> anyhow::Result<lofty::file::TaggedFile> {
     let probe = Probe::open(path)?;
     let probe = if probe.file_type().is_none() {
         probe.guess_file_type()?
     } else {
         probe
     };
-    let mut tagged = probe.read()?;
+    Ok(probe.read()?)
+}
+
+fn tag_in_place_lofty(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()> {
+    let mut tagged = open_tagged(path)?;
     let tag_type = tagged.primary_tag_type();
     let tag = tagged.primary_tag_mut();
     let tag = match tag {
@@ -406,13 +436,7 @@ fn tag_in_place_lofty(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<(
 /// Reads back what a finished file actually contains. Used by the live check and
 /// by tests: writing tags is only useful if they survive on disk.
 pub fn read_tags(path: &Path) -> anyhow::Result<String> {
-    let probe = Probe::open(path)?;
-    let probe = if probe.file_type().is_none() {
-        probe.guess_file_type()?
-    } else {
-        probe
-    };
-    let tagged = probe.read()?;
+    let tagged = open_tagged(path)?;
     let Some(tag) = tagged.primary_tag() else {
         anyhow::bail!("в файле нет тега");
     };

@@ -5,6 +5,7 @@ use crate::config::{self, Settings};
 use crate::download::{Job, JobControl};
 use crate::ffmpeg;
 use crate::model::*;
+use crate::startup_log;
 use crate::updates;
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,9 +67,12 @@ pub fn get_settings(state: State<'_, AppState>) -> Settings {
 pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<Settings, String> {
     let mut sanitized = settings;
     sanitized.sanitize();
-    config::save_settings(&sanitized).map_err(|error| format!("{error:#}"))?;
+    // The lock is held across the write so an autosave and the username fill-in
+    // cannot interleave: without it one of them writes a stale copy of the other
+    // field and the edit is lost.
     {
         let mut slot = state.settings.lock().expect("settings lock");
+        config::save_settings(&sanitized).map_err(|error| format!("{error:#}"))?;
         *slot = sanitized.clone();
     }
     state.reset_client();
@@ -109,9 +113,6 @@ pub async fn check_token(state: State<'_, AppState>, token: String) -> Result<Ac
 /// have to copy it by hand. A login is preferred; a token without one gets the
 /// uid, which the likes endpoint accepts just as well.
 fn remember_username(state: &State<'_, AppState>, info: &AccountInfo) {
-    if !state.settings().username.trim().is_empty() {
-        return;
-    }
     let name = if !info.login.is_empty() {
         info.login.clone()
     } else {
@@ -120,12 +121,17 @@ fn remember_username(state: &State<'_, AppState>, info: &AccountInfo) {
     if name.is_empty() {
         return;
     }
-    let mut settings = state.settings();
-    settings.username = name;
-    if config::save_settings(&settings).is_ok() {
-        if let Ok(mut slot) = state.settings.lock() {
-            *slot = settings;
-        }
+    // Read, modify and write under one lock, otherwise a concurrent autosave
+    // overwrites this with a copy taken before the username was known.
+    let Ok(mut slot) = state.settings.lock() else {
+        return;
+    };
+    if !slot.username.trim().is_empty() {
+        return;
+    }
+    slot.username = name;
+    if let Err(error) = config::save_settings(&slot) {
+        startup_log::write(&format!("имя пользователя не сохранилось: {error:#}"));
     }
 }
 

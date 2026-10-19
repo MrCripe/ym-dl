@@ -31,6 +31,7 @@ type State = {
   setSettings: (settings: Settings) => Promise<void>;
   patchSettings: (values: Partial<Settings>) => void;
   saveSettingsDraft: () => Promise<void>;
+  flushSettings: () => Promise<void>;
   setAccount: (account: AccountInfo | null) => void;
   finishWizard: (account: AccountInfo) => Promise<void>;
   resolve: (url: string) => Promise<void>;
@@ -114,9 +115,16 @@ export const useApp = create<State>((set, get) => ({
         .then(async (account) => {
           set({ account, needsToken: false });
           // The backend fills the likes username from the account, so pull the
-          // settings again or the field stays empty until a restart.
+          // settings again or the field stays empty until a restart. A draft the
+          // user is already editing wins: replacing it would erase their input.
           const fresh = await api.settings().catch(() => null);
-          if (fresh) set({ settings: fresh, settingsDraft: fresh });
+          if (fresh) {
+            set((current) =>
+              current.settingsDirty
+                ? { settings: fresh }
+                : { settings: fresh, settingsDraft: fresh },
+            );
+          }
         })
         .catch((error) => {
           // A rejected token must send the user back to the token screen
@@ -176,7 +184,19 @@ export const useApp = create<State>((set, get) => ({
     const draft = get().settingsDraft ?? get().settings;
     if (!draft) return;
     const saved = await api.saveSettings(draft);
-    set({ settings: saved, settingsDraft: saved, settingsDirty: false });
+    // Keep edits made while the request was in flight: replacing the draft with
+    // the saved copy would silently discard whatever the user typed meanwhile.
+    set((current) =>
+      current.settingsDraft === draft
+        ? { settings: saved, settingsDraft: saved, settingsDirty: false }
+        : { settings: saved },
+    );
+  },
+
+  flushSettings: async () => {
+    window.clearTimeout(saveTimer);
+    if (!get().settingsDirty) return;
+    await get().saveSettingsDraft();
   },
 
   finishWizard: async (account) => {
@@ -196,12 +216,14 @@ export const useApp = create<State>((set, get) => ({
         resolveProgress: null,
       });
       // Remember the link so the next launch starts where the user left off.
-      const { settings } = get();
-      if (settings && settings.lastUrl !== url) {
-        api.saveSettings({ ...settings, lastUrl: url }).then(
-          (saved) => set({ settings: saved }),
-          () => undefined,
-        );
+      // It goes through the draft: writing it straight to `settings` would be
+      // undone by the next autosave, which persists the draft.
+      const base = get().settingsDraft ?? get().settings;
+      if (base && base.lastUrl !== url) {
+        set({ settingsDraft: { ...base, lastUrl: url }, settingsDirty: true });
+        void get()
+          .flushSettings()
+          .catch(() => undefined);
       }
     } catch (error) {
       set({ loadingSource: false, resolveProgress: null });

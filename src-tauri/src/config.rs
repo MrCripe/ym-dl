@@ -261,7 +261,11 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("не удалось создать {}", parent.display()))?;
     }
-    let temp = path.with_extension("tmp");
+    // A fixed temp name is shared by every writer, so two writes at once left one
+    // renaming a file the other had already moved away.
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let ticket = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = path.with_extension(format!("{}.{}.tmp", std::process::id(), ticket));
     fs::write(&temp, data)?;
     #[cfg(unix)]
     {

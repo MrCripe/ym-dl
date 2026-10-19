@@ -132,7 +132,7 @@ pub async fn run_live_check(track_id: &str, quality: u8) -> LiveReport {
     let final_path = dir.join(format!("{}{extension}", item.id));
     // Exactly the naming the download engine uses: the real extension has to stay
     // last or the tagger cannot identify the container.
-    let temp = final_path.with_file_name(format!(".{}.part{extension}", item.id));
+    let temp = audio::part_path(&final_path);
     if let Err(error) = std::fs::write(&temp, &bytes) {
         lines.push(format!("запись упала: {error}"));
         return LiveReport { ok: false, lines };
