@@ -260,9 +260,6 @@ impl Shared {
             return;
         }
 
-        if let Err(error) = self.tag(track, &temp, &final_path, &item.id).await {
-            self.log("warn", format!("Теги не записались для «{}»: {error:#}", item.title));
-        }
         if let Err(error) = std::fs::rename(&temp, &final_path) {
             let _ = std::fs::remove_file(&temp);
             self.settle(index, "failed", &format!("не удалось переименовать файл: {error}"), "");
@@ -293,6 +290,13 @@ impl Shared {
             }
         }
 
+        // Tags go into the file that is actually kept. Tagging the m4a before the
+        // FLAC extraction lost the cover and most fields on the way through ffmpeg,
+        // and the m4a muxer refuses a FLAC stream outright.
+        if let Err(error) = self.tag(track, &final_path, &item.id).await {
+            self.log("warn", format!("Теги не записались для «{}»: {error:#}", item.title));
+        }
+
         let label = if info.bitrate > 0 {
             format!("{codec} {} kbps", info.bitrate)
         } else {
@@ -301,7 +305,7 @@ impl Shared {
         self.settle(index, "ok", &label, &final_path.display().to_string());
     }
 
-    async fn tag(&self, track: &Track, path: &Path, final_path: &Path, track_id: &str) -> Result<()> {
+    async fn tag(&self, track: &Track, path: &Path, track_id: &str) -> Result<()> {
         let album_id = track
             .albums
             .first()
@@ -335,9 +339,9 @@ impl Shared {
             let format = if self.settings.lyrics_format == "lrc" { "LRC" } else { "TEXT" };
             if let Ok(text) = self.client.lyrics(track_id, format).await {
                 if self.settings.lyrics_format == "lrc" {
-                    // The tag path is the `.part` file; lyrics belong next to
-                    // the final track, not next to the temporary one.
-                    let _ = std::fs::write(final_path.with_extension("lrc"), text);
+                    // A sidecar belongs next to the track, and `path` is the file
+                    // that stays — the m4a before extraction is gone by now.
+                    let _ = std::fs::write(path.with_extension("lrc"), text);
                 } else {
                     payload.lyrics = Some(text);
                 }

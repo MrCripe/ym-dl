@@ -301,6 +301,9 @@ fn write_tags_ffmpeg(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()
         command.args(["-map", "1:v", "-c:v", "copy", "-disposition:v", "attached_pic"]);
     }
     command.args(["-c:a", "copy", "-map_metadata", "0"]);
+    // The muxer is chosen from the extension, and `.m4a` picks `ipod`, which
+    // refuses a FLAC stream — the tag pass then failed for every lossless track.
+    command.args(["-f", "mp4"]);
     for (key, value) in metadata_pairs(payload) {
         command.arg("-metadata").arg(format!("{key}={value}"));
     }
@@ -555,6 +558,20 @@ mod tag_tests {
         status.success().then_some(path)
     }
 
+    /// A FLAC stream inside an MP4 container, which is exactly what the lossless
+    /// download produces before the FLAC is extracted.
+    fn make_flac_in_mp4(dir: &Path) -> Option<PathBuf> {
+        let path = dir.join("source-flac.m4a");
+        let status = Command::new("ffmpeg")
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args(["-i", "anullsrc=r=44100:cl=stereo", "-t", "0.2"])
+            .args(["-c:a", "flac", "-f", "mp4"])
+            .arg(&path)
+            .status()
+            .ok()?;
+        status.success().then_some(path)
+    }
+
     fn tiny_png() -> Vec<u8> {
         // 1x1 PNG, enough for lofty to treat the payload as a real picture.
         const PNG: &[u8] = &[
@@ -654,9 +671,46 @@ mod tag_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Lossless downloads arrive as FLAC inside MP4 and are converted to a real
+    /// `.flac` before tagging. Tagging the m4a first lost the cover and most
+    /// fields on the way through ffmpeg, so the tagger has to work on the final
+    /// FLAC — and that is what this covers.
+    #[test]
+    fn a_flac_keeps_cover_and_fields() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("ymdl-flac-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some(source) = make_flac_in_mp4(&dir) else {
+            eprintln!("ffmpeg недоступен — тест пропущен");
+            return;
+        };
+        assert_eq!(
+            crate::ffmpeg::extract_flac(&source),
+            "converted",
+            "FLAC должен извлечься из mp4"
+        );
+        let flac = source.with_extension("flac");
+        assert!(flac.is_file());
+
+        write_tags(&flac, &payload_with_cover()).expect("теги должны записаться в flac");
+
+        let summary = read_tags(&flac).expect("flac должен перечитаться");
+        assert!(summary.contains("название=\"Название\""), "{summary}");
+        assert!(summary.contains("исполнитель=\"Артист\""), "{summary}");
+        assert!(summary.contains("альбом=\"Альбом\""), "{summary}");
+        assert!(summary.contains("год=\"2026\""), "{summary}");
+        assert!(summary.contains("жанр=\"rock\""), "{summary}");
+        assert!(summary.contains("обложка=1"), "обложка потерялась: {summary}");
+        assert!(summary.contains("лирикс=да"), "лирикс потерялся: {summary}");
+        assert!(crate::ffmpeg::decodes(&flac), "flac после тегов не декодируется");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Byte offset of a top-level MP4 atom, or `None` when it is absent.
-    fn find_atom(bytes: &[u8], name: &[u8; 4]) -> Option<usize> {
-        let mut offset = 0usize;
+    fn find_atom(bytes: &[u8], name: &[u8; 4]) -> Option<usize> {        let mut offset = 0usize;
         while offset + 8 <= bytes.len() {
             let size = u32::from_be_bytes(bytes[offset..offset + 4].try_into().ok()?) as usize;
             if size < 8 {
