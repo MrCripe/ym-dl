@@ -354,6 +354,9 @@ pub struct UpdateEntry {
     pub installed: String,
     pub latest: String,
     pub newer: bool,
+    /// False when the newest version could not be determined, so the UI does not
+    /// claim "up to date" after a failed check.
+    pub checked: bool,
     pub detail: String,
 }
 

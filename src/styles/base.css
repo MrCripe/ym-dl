@@ -141,7 +141,12 @@ textarea {
 .app-shell {
   display: flex;
   height: 100%;
-  background: var(--surface);
+  /* The accent tints the whole backdrop, not just the buttons: a colour choice
+     that only repainted one button looked like it did nothing. */
+  background:
+    radial-gradient(110% 70% at 8% 0%, color-mix(in srgb, var(--primary) 12%, transparent), transparent 62%),
+    radial-gradient(90% 65% at 100% 100%, color-mix(in srgb, var(--tertiary) 10%, transparent), transparent 60%),
+    var(--surface);
   position: relative;
   overflow: hidden;
 }

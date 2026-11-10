@@ -336,15 +336,39 @@ impl Shared {
         }
 
         if self.settings.lyrics_format != "none" {
-            let format = if self.settings.lyrics_format == "lrc" { "LRC" } else { "TEXT" };
-            if let Ok(text) = self.client.lyrics(track_id, format).await {
-                if self.settings.lyrics_format == "lrc" {
-                    // A sidecar belongs next to the track, and `path` is the file
-                    // that stays — the m4a before extraction is gone by now.
-                    let _ = std::fs::write(path.with_extension("lrc"), text);
-                } else {
-                    payload.lyrics = Some(text);
+            let want_synced = self.settings.lyrics_format == "lrc";
+            let found = crate::lyrics::fetch(
+                &self.client,
+                track,
+                track_id,
+                want_synced,
+                self.settings.lyrics_fallback,
+            )
+            .await;
+            match found {
+                Some(lyrics) => {
+                    // Embedded so the text travels with the file. A sidecar is only
+                    // written when the text really carries timestamps: a `.lrc`
+                    // without them is worse than none, players show an empty pane.
+                    if lyrics.synced {
+                        let _ = std::fs::write(path.with_extension("lrc"), &lyrics.text);
+                    }
+                    payload.lyrics = Some(lyrics.text);
+                    // Only worth a line when it is not the plain case: a whole
+                    // playlist would otherwise double the log with "yandex, with
+                    // timings" for every track.
+                    if lyrics.source != "yandex" || !lyrics.synced {
+                        self.log(
+                            "info",
+                            format!(
+                                "Текст песни: {} ({})",
+                                lyrics.source,
+                                if lyrics.synced { "с таймингами" } else { "без таймингов" }
+                            ),
+                        );
+                    }
                 }
+                None => self.log("info", format!("Текста песни нет: «{}»", track.title)),
             }
         }
 

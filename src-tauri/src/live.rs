@@ -163,17 +163,25 @@ pub async fn run_live_check(track_id: &str, quality: u8) -> LiveReport {
         lines.push("у трека нет coverUri".to_string());
     }
 
-    // Lyrics, same call the download engine makes. "No lyrics found" is a normal
-    // server answer for a track without a text, not a failure.
-    match client.lyrics(track_id, "TEXT").await {
-        Ok(text) => {
-            lines.push(format!("лирикс скачан: {} символов", text.chars().count()));
-            payload.lyrics = Some(text);
+    // Lyrics, through the same resolver the download engine uses: Yandex first,
+    // lrclib when Yandex has nothing.
+    match crate::lyrics::fetch(&client, track, track_id, true, true).await {
+        Some(lyrics) => {
+            lines.push(format!(
+                "лирикс: {} ({}), {} символов{}",
+                lyrics.source,
+                if lyrics.synced { "с таймингами" } else { "без таймингов" },
+                lyrics.text.chars().count(),
+                lyrics
+                    .text
+                    .lines()
+                    .next()
+                    .map(|line| format!(", первая строка: {line}"))
+                    .unwrap_or_default()
+            ));
+            payload.lyrics = Some(lyrics.text);
         }
-        Err(error) if format!("{error:#}").contains("No lyrics found") => {
-            lines.push("лирикса у трека нет на сервере — это нормально".to_string());
-        }
-        Err(error) => lines.push(format!("лирикс не скачался: {error:#}")),
+        None => lines.push("лирикса нет ни в Яндексе, ни в lrclib — это нормально".to_string()),
     }
 
     if let Err(error) = audio::write_tags(&temp, &payload) {

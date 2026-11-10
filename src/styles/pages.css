@@ -87,6 +87,26 @@
   flex-wrap: wrap;
 }
 
+/* Separates the two ways in: signing in, or pasting an existing token. */
+.wizard-divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 22px 0;
+  color: var(--on-surface-variant);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.wizard-divider::before,
+.wizard-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: color-mix(in srgb, var(--outline-variant) 70%, transparent);
+}
+
 .status-card {
   margin-top: 16px;
   background: var(--surface-container);

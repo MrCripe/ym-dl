@@ -10,14 +10,18 @@ export default function Wizard() {
   const finishWizard = useApp((state) => state.finishWizard);
   const toast = useApp((state) => state.toast);
 
+  // The sign-in button is the main path; the token field is the fallback for
+  // anyone who already has a token and does not want to log in again.
+  const [manual, setManual] = useState(false);
   const [token, setToken] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"login" | "check" | null>(null);
   const [error, setError] = useState("");
   const [account, setAccount] = useState<AccountInfo | null>(null);
 
   useEffect(() => {
-    // Pre-fill from the clipboard only when it looks like a token: saves a
-    // paste without ever guessing wrong.
+    if (!manual) return;
+    // Pre-fill from the clipboard only when it looks like a token: saves a paste
+    // without ever guessing wrong.
     navigator.clipboard
       ?.readText()
       .then((text) => {
@@ -25,14 +29,29 @@ export default function Wizard() {
         if (trimmed.length > 30 && !trimmed.includes(" ")) setToken(trimmed);
       })
       .catch(() => undefined);
-  }, []);
+  }, [manual]);
+
+  const login = async () => {
+    setBusy("login");
+    setError("");
+    try {
+      const info = await api.loginYandex();
+      setAccount(info);
+      toast(`Вход выполнен: ${info.name || info.login || info.uid}`, "success");
+    } catch (problem) {
+      setAccount(null);
+      setError(String((problem as Error).message));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const verify = async () => {
     if (!token.trim()) {
       setError("Вставьте токен — без него Яндекс.Музыка не отдаст музыку.");
       return;
     }
-    setBusy(true);
+    setBusy("check");
     setError("");
     try {
       const info = await api.checkToken(token);
@@ -41,15 +60,12 @@ export default function Wizard() {
       setAccount(null);
       setError(String((problem as Error).message));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
 
   const proceed = async () => {
-    if (!account) {
-      await verify();
-      return;
-    }
+    if (!account) return;
     await finishWizard(account);
     toast(`Привет, ${account.name || account.login}!`, "success");
   };
@@ -62,63 +78,113 @@ export default function Wizard() {
         </div>
         <h1>Добро пожаловать в ym-dl</h1>
         <p className="lede">
-          Загрузчик Яндекс.Музыки. Вставьте токен — приложение проверит аккаунт и сразу
-          скажет, отдаёт ли сервис lossless именно вам.
+          Загрузчик Яндекс.Музыки. Войдите в аккаунт — приложение само получит токен и
+          сразу скажет, отдаёт ли сервис lossless именно вам.
         </p>
 
-        <TextField
-          label="Токен Яндекс.Музыки"
-          value={token}
-          type="password"
-          icon="key"
-          placeholder="Вставьте токен (OAuth)"
-          onChange={(value) => {
-            setToken(value);
-            setAccount(null);
-            setError("");
-          }}
-          onEnter={verify}
-          error={error}
-          autoFocus
-        />
+        {account ? (
+          <AccountStatus account={account} />
+        ) : (
+          <>
+            <div style={{ marginTop: 18 }}>
+              <Button
+                block
+                size="large"
+                icon="person"
+                onClick={login}
+                disabled={busy !== null}
+              >
+                {busy === "login" ? "Жду вход в Яндекс…" : "Войти в Яндекс"}
+              </Button>
+            </div>
+            <p className="wizard-note" style={{ marginTop: 10 }}>
+              Откроется окно Яндекса. Войдите в аккаунт — окно закроется само, токен
+              подставится.
+            </p>
 
-        <div className="wizard-links">
-          <Button
-            variant="tonal"
-            size="compact"
-            icon="content_paste"
-            onClick={async () => {
-              try {
-                const text = await navigator.clipboard.readText();
-                if (text.trim()) {
-                  setToken(text.trim());
-                  setAccount(null);
-                  setError("");
-                }
-              } catch {
-                setError("Буфер обмена недоступен — вставьте токен вручную.");
-              }
-            }}
-          >
-            Вставить из буфера
-          </Button>
-          <Button
-            variant="text"
-            size="compact"
-            icon="open_in_new"
-            onClick={() => openUrl(TOKEN_HELP).catch(() => undefined)}
-          >
-            Где взять токен
-          </Button>
-        </div>
+            <div className="wizard-divider">
+              <span>или</span>
+            </div>
 
-        {account ? <AccountStatus account={account} /> : null}
+            {manual ? (
+              <>
+                <TextField
+                  label="Токен Яндекс.Музыки"
+                  value={token}
+                  type="password"
+                  icon="key"
+                  placeholder="Вставьте токен (OAuth)"
+                  onChange={(value) => {
+                    setToken(value);
+                    setError("");
+                  }}
+                  onEnter={verify}
+                  error={error}
+                  autoFocus
+                />
+                <div className="wizard-links">
+                  <Button
+                    variant="tonal"
+                    size="compact"
+                    icon="content_paste"
+                    onClick={async () => {
+                      try {
+                        const text = await navigator.clipboard.readText();
+                        if (text.trim()) {
+                          setToken(text.trim());
+                          setError("");
+                        }
+                      } catch {
+                        setError("Буфер обмена недоступен — вставьте токен вручную.");
+                      }
+                    }}
+                  >
+                    Вставить из буфера
+                  </Button>
+                  <Button
+                    variant="text"
+                    size="compact"
+                    icon="open_in_new"
+                    onClick={() => openUrl(TOKEN_HELP).catch(() => undefined)}
+                  >
+                    Где взять токен
+                  </Button>
+                </div>
+                <div style={{ marginTop: 14 }}>
+                  <Button
+                    block
+                    variant="tonal"
+                    icon="verified"
+                    onClick={verify}
+                    disabled={busy !== null}
+                  >
+                    {busy === "check" ? "Проверяю…" : "Проверить токен"}
+                  </Button>
+                </div>
+                {error ? <p className="wizard-error">{error}</p> : null}
+              </>
+            ) : (
+              <Button
+                block
+                variant="outlined"
+                icon="key"
+                onClick={() => setManual(true)}
+                disabled={busy !== null}
+              >
+                У меня уже есть токен
+              </Button>
+            )}
+            {!manual && error ? <p className="wizard-error">{error}</p> : null}
+          </>
+        )}
 
-        <div style={{ marginTop: 22 }}>
-          <Button block size="large" icon={account ? "arrow_forward" : "verified"} onClick={proceed} disabled={busy}>
-            {busy ? "Проверяю…" : account ? "Продолжить" : "Проверить токен"}
-          </Button>
-        </div>
+        {account ? (
+          <div style={{ marginTop: 22 }}>
+            <Button block size="large" icon="arrow_forward" onClick={proceed}>
+              Продолжить
+            </Button>
+          </div>
+        ) : null}
 
         <p className="wizard-note">
           Токен хранится локально, рядом с программой, и никуда не отправляется.

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api, subscribe, type AccountInfo, type JobProgress, type Settings, type SourceInfo, type TrackState } from "./api";
+import { findUpdate } from "./update";
 
 export type Page = "home" | "downloads" | "settings";
 export type Toast = { id: number; text: string; tone: "info" | "error" | "success"; action?: string; page?: Page };
@@ -137,14 +138,11 @@ export const useApp = create<State>((set, get) => ({
 
     // Quiet startup update check: only a real update produces a message.
     if (settings.checkUpdates) {
-      api
-        .environment()
-        .then((env) => api.updates(env.appVersion))
-        .then((entries) => {
-          const stale = entries.filter((entry) => entry.newer);
-          if (stale.length) {
+      findUpdate()
+        .then((update) => {
+          if (update) {
             get().toast(
-              `Доступно обновление: ${stale.map((entry) => `${entry.name} ${entry.latest}`).join(", ")}`,
+              `Доступно обновление ${update.version} — установить можно в настройках`,
               "info",
               "Настройки",
               "settings",

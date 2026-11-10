@@ -73,21 +73,100 @@ jobs:
       # tauri-action builds the bundles and attaches them to the release of the
       # tag. A draft is created so nothing goes public before the assets are
       # actually there and verified.
+      #
+      # The signing key lets the app verify that an update really comes from this
+      # repository before installing it, and includeUpdaterJson writes the
+      # manifest the in-app updater reads.
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "ym-dl ${{ github.event.inputs.tag || github.ref_name }}"
+          # NSIS is preferred on Windows: the setup.exe replaces the installed
+          # build silently, while the .msi cannot install over itself without a
+          # reboot. The manifest itself (latest.json) is written by default.
+          updaterJsonPreferNsis: true
           releaseBody: |
             Загрузчик Яндекс.Музыки с интерфейсом на Material Design 3.
 
-            **Windows** — `.msi` (установщик) или `_x64-setup.exe` (NSIS).
-            **Linux** — `.AppImage` (просто сделайте файл исполняемым и запустите)
-            или `.deb`.
+            **Windows** — `.msi` (установщик), `_x64-setup.exe` (NSIS) или
+            `_windows-portable.zip` — распакованная программа, просто запустить
+            `ym-dl.exe`, ничего не устанавливая.
+            **Linux** — `.AppImage` (сделайте файл исполняемым и запустите),
+            `.deb` или `_linux-portable.tar.gz` — распакованная программа.
+
+            Установленное приложение обновляется само: «Настройки → Обновления →
+            Обновить», переустанавливать вручную не нужно.
 
             Приложение портативное: настройки, токен и профиль лежат в папке
             `ym-dl-data` рядом с исполняемым файлом.
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      # A plain archive with the already-built binary, for anyone who does not want
+      # an installer. Windows needs nothing extra; the Linux binary uses the
+      # system's WebKitGTK, which the .deb pulls in as a dependency.
+      - name: Portable archive
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          $version = $env:TAG.TrimStart('v')
+          $stage = "portable-windows"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "src-tauri/target/release/ym-dl.exe" $stage
+          @"
+          ym-dl $version — портативная сборка для Windows
+          ================================================
+
+          Запустите ym-dl.exe. Устанавливать ничего не нужно.
+
+          Рядом с exe появится папка ym-dl-data: в ней настройки, токен и профиль
+          окна. Чтобы перенести программу на другой компьютер, скопируйте всю
+          папку целиком.
+
+          Нужен установленный WebView2 — он есть в Windows 10 и 11 по умолчанию.
+          Если окно не открывается, поставьте "Evergreen WebView2 Runtime" от
+          Microsoft.
+
+          Без ffmpeg программа скачивает .m4a; чтобы получать FLAC, положите
+          ffmpeg.exe и ffprobe.exe рядом с ym-dl.exe или установите их в PATH.
+          "@ | Set-Content "$stage/ЧИТАТЬ.txt" -Encoding utf8
+          Compress-Archive -Path "$stage/*" -DestinationPath "ym-dl_${version}_windows-portable.zip" -Force
+          gh release upload $env:TAG "ym-dl_${version}_windows-portable.zip" --clobber
+
+      - name: Portable archive
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          stage="portable-linux"
+          mkdir -p "$stage"
+          cp "src-tauri/target/release/ym-dl" "$stage/"
+          cat > "$stage/README.txt" <<EOF
+          ym-dl $version — портативная сборка для Linux
+          ==============================================
+
+          Распакуйте архив и запустите ./ym-dl. Устанавливать ничего не нужно.
+
+          Рядом с бинарником появится папка ym-dl-data: в ней настройки, токен и
+          профиль окна. Чтобы перенести программу на другой компьютер, скопируйте
+          всю папку целиком.
+
+          Нужны системные библиотеки (в Ubuntu/Debian):
+            sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0
+
+          Без ffmpeg программа скачивает .m4a; чтобы получать FLAC, установите
+          ffmpeg:
+            sudo apt install ffmpeg
+          EOF
+          tar -czf "ym-dl_${version}_linux-portable.tar.gz" -C "$stage" .
+          gh release upload "$TAG" "ym-dl_${version}_linux-portable.tar.gz" --clobber

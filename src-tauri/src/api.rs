@@ -28,6 +28,11 @@ pub struct Client {
 }
 
 impl Client {
+    /// The raw HTTP client, for the lyrics fallback that talks to another host.
+    pub fn http(&self) -> &reqwest::Client {
+        &self.http
+    }
+
     pub fn new(token: &str, timeout: u64, tries: u32, retry_delay: u64) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout.max(1)))

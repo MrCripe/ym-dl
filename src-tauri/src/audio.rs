@@ -602,6 +602,37 @@ mod tag_tests {
         }
     }
 
+    /// Timed lyrics are the point of the LRC option: the timestamps have to reach
+    /// the file, not just some lyrics text.
+    #[test]
+    fn lrc_timestamps_are_stored_verbatim() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("ymdl-lrc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some(source) = make_flac_in_mp4(&dir) else {
+            eprintln!("ffmpeg недоступен — тест пропущен");
+            return;
+        };
+        assert_eq!(crate::ffmpeg::extract_flac(&source), "converted");
+        let flac = source.with_extension("flac");
+
+        let mut payload = payload_with_cover();
+        payload.lyrics = Some("[00:12.34] первая строка\n[00:15.00] вторая строка".into());
+        write_tags(&flac, &payload).expect("теги должны записаться");
+
+        let tagged = open_tagged(&flac).expect("файл должен открыться");
+        let text = tagged
+            .primary_tag()
+            .and_then(|tag| tag.get_string(&ItemKey::Lyrics))
+            .unwrap_or("");
+        assert!(text.contains("[00:12.34]"), "тайминги потерялись: {text}");
+        assert!(text.contains("вторая строка"), "текст потерялся: {text}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The bug that lost every tag: the engine tagged a file named `X.m4a.part`,
     /// and lofty guesses the container from the extension.
     #[test]

@@ -17,3 +17,6 @@ Thumbs.db
 # Legacy Python implementation: kept locally, not part of the shipped app. It
 # imports the GPL `ymd` package, so it is not published under MIT.
 archive/
+
+# Stray files must not reach the repository.
+.tmp-*

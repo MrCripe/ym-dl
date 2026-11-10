@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, type EnvironmentInfo, type UpdateEntry } from "../lib/api";
+import { findUpdate, installUpdate, type AvailableUpdate } from "../lib/update";
 import { useApp } from "../lib/store";
 import { Badge, Button, Icon, Segmented, Slider, Switch, TextField } from "../components/ui";
 
@@ -25,6 +26,8 @@ export default function SettingsPage() {
   const [env, setEnv] = useState<EnvironmentInfo | null>(null);
   const [updates, setUpdates] = useState<UpdateEntry[] | null>(null);
   const [checking, setChecking] = useState(false);
+  const [pending, setPending] = useState<AvailableUpdate | null>(null);
+  const [installing, setInstalling] = useState<number | null>(null);
 
   useEffect(() => {
     api.environment().then(setEnv).catch(() => undefined);
@@ -33,12 +36,44 @@ export default function SettingsPage() {
   const checkUpdates = async () => {
     setChecking(true);
     try {
-      const list = await api.updates(env?.appVersion ?? "0.0.0");
+      const list = await api.updates();
       setUpdates(list);
+      // The updater reads the release manifest and knows whether it can install
+      // the new build in place, which the plain version check cannot say.
+      const available = await findUpdate();
+      setPending(available);
+      if (available) {
+        toast(`Доступна версия ${available.version}`, "info");
+      } else {
+        toast("Установлена последняя версия", "success");
+      }
     } catch (error) {
-      toast(String((error as Error).message), "error");
+      // "Nothing to install" and "the check failed" are different answers; the
+      // second one must not be shown as a green "you are up to date".
+      setPending(null);
+      toast(`Не удалось проверить обновления: ${(error as Error).message}`, "error");
     } finally {
       setChecking(false);
+    }
+  };
+
+  const applyUpdate = async () => {
+    setInstalling(0);
+    try {
+      await installUpdate(({ downloaded, total }) => {
+        if (total && total > 0) {
+          setInstalling(Math.min(100, Math.round((downloaded / total) * 100)));
+        } else {
+          // Without a content length there is no percentage, but the button still
+          // has to show that something is happening.
+          setInstalling(0);
+        }
+      });
+      // installUpdate restarts the app; reaching here means it did not.
+      toast("Обновление установлено — перезапускаю", "success");
+    } catch (error) {
+      setInstalling(null);
+      toast(`Обновление не установилось: ${(error as Error).message}`, "error");
     }
   };
 
@@ -54,7 +89,7 @@ export default function SettingsPage() {
           </div>
           <div className="row">
             {dirty ? (
-              <Badge tone="warning" icon="sync">
+              <Badge tone="warning" icon="refresh">
                 сохраняю…
               </Badge>
             ) : (
@@ -248,16 +283,27 @@ export default function SettingsPage() {
           />
           <Row
             name="Текст песни"
-            desc="LRC создаёт отдельный файл с временными метками"
+            desc="LRC — с таймингами, чтобы плеер подсвечивал строку"
             control={
               <Segmented
                 value={draft.lyricsFormat}
                 onChange={(value) => patch({ lyricsFormat: value })}
                 options={[
                   { value: "none", label: "Не качать" },
-                  { value: "text", label: "В теги" },
+                  { value: "text", label: "Без таймингов" },
                   { value: "lrc", label: "LRC" },
                 ]}
+              />
+            }
+          />
+          <Row
+            name="Брать текст с lrclib.net"
+            desc="Если в Яндексе текста нет — искать его в открытой базе"
+            control={
+              <Switch
+                checked={draft.lyricsFallback}
+                label="Резервный источник текста"
+                onChange={(value) => patch({ lyricsFallback: value })}
               />
             }
           />
@@ -515,6 +561,30 @@ export default function SettingsPage() {
               </Button>
             }
           />
+          {pending ? (
+            <div className="update-row">
+              <div className="names">
+                <div className="md-body">Доступна версия {pending.version}</div>
+                <div className="md-body-sm muted">
+                  Сейчас установлена {pending.currentVersion}. Обновление скачается и
+                  установится само, переустанавливать вручную не нужно.
+                </div>
+              </div>
+              <Button
+                variant="filled"
+                size="compact"
+                icon="system_update"
+                onClick={applyUpdate}
+                disabled={installing !== null}
+              >
+                {installing === null
+                  ? "Обновить"
+                  : installing > 0
+                    ? `${installing}%`
+                    : "Скачиваю…"}
+              </Button>
+            </div>
+          ) : null}
           {updates?.map((entry) => (
             <div key={entry.name} className="update-row">
               <div className="names">
@@ -522,21 +592,25 @@ export default function SettingsPage() {
                 <div className="md-body-sm muted">{entry.detail}</div>
               </div>
               <Badge tone="neutral">у вас {entry.installed}</Badge>
-              <Badge tone={entry.newer ? "warning" : "success"}>
-                {entry.newer ? `доступно ${entry.latest}` : "актуально"}
+              <Badge tone={!entry.checked ? "warning" : entry.newer ? "warning" : "success"}>
+                {!entry.checked
+                  ? "не проверилось"
+                  : entry.newer
+                    ? `доступно ${entry.latest}`
+                    : "актуально"}
               </Badge>
               {entry.newer && entry.name === "Приложение" && (
                 <Button
                   variant="tonal"
                   size="compact"
-                  icon="download"
+                  icon="open_in_new"
                   onClick={() => {
                     void openUrl(`https://${entry.detail}/latest`).catch((error) =>
                       toast(String((error as Error).message), "error"),
                     );
                   }}
                 >
-                  Скачать
+                  Страница релиза
                 </Button>
               )}
             </div>
@@ -561,7 +635,7 @@ export default function SettingsPage() {
               <Button
                 variant="danger-tonal"
                 size="compact"
-                icon="logout"
+                icon="key"
                 onClick={async () => {
                   try {
                     await resetToken();

@@ -33,6 +33,18 @@ export default function App() {
     init().catch(() => undefined);
   }, [init]);
 
+  // The boot screen from index.html covers the window until the app is ready, so
+  // the first thing on screen is the logo instead of an empty frame. It fades out
+  // rather than being cut, which is what made the start feel abrupt.
+  useEffect(() => {
+    if (!ready) return;
+    const boot = document.getElementById("boot");
+    if (!boot) return;
+    boot.classList.add("leaving");
+    const timer = window.setTimeout(() => boot.remove(), 480);
+    return () => window.clearTimeout(timer);
+  }, [ready]);
+
   useEffect(() => {
     // Closing with the title bar button goes through flushSettings, but the OS
     // close button, Alt+F4 and a shutdown do not, so the pending write is also

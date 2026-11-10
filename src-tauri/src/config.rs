@@ -25,6 +25,8 @@ pub struct Settings {
     pub cover_original: bool,
     pub cover_resolution: u32,
     pub lyrics_format: String,
+    /// Ask lrclib.net when Yandex has no lyrics for a track.
+    pub lyrics_fallback: bool,
     pub compatibility_level: u8,
     pub only_music: bool,
     pub stick_to_artist: bool,
@@ -53,7 +55,8 @@ impl Default for Settings {
             embed_cover: true,
             cover_original: false,
             cover_resolution: 400,
-            lyrics_format: "none".into(),
+            lyrics_format: "lrc".into(),
+            lyrics_fallback: true,
             compatibility_level: 1,
             only_music: true,
             stick_to_artist: false,
@@ -79,7 +82,7 @@ impl Settings {
             self.quality = 2;
         }
         if !matches!(self.lyrics_format.as_str(), "none" | "text" | "lrc") {
-            self.lyrics_format = "none".into();
+            self.lyrics_format = "lrc".into();
         }
         if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
             self.theme = "system".into();
@@ -169,6 +172,73 @@ pub fn portable_dir() -> PathBuf {
     ProjectDirs::from(APP_DIR_QUALIFIER, APP_DIR_ORG, APP_DIR_NAME)
         .map(|dirs| dirs.config_dir().to_path_buf())
         .unwrap_or_else(|| home_dir().join(".config").join(APP_DIR_NAME))
+}
+
+/// Where the previous run kept its data.
+///
+/// The in-app updater installs the new build into the user profile, so after an
+/// update the exe sits in a different folder and its `ym-dl-data` — settings and
+/// token — is not where the new build looks. This marker lets the new build find
+/// the old folder once and take it over.
+fn handover_marker() -> Option<PathBuf> {
+    ProjectDirs::from(APP_DIR_QUALIFIER, APP_DIR_ORG, APP_DIR_NAME)
+        .map(|dirs| dirs.config_dir().join("last-data-dir"))
+}
+
+/// Records the current data folder so a build started from somewhere else can
+/// adopt it. Called at startup, before anything is read.
+pub fn remember_data_dir() {
+    let Some(marker) = handover_marker() else { return };
+    let current = portable_dir();
+    if fs::read_to_string(&marker)
+        .map(|saved| saved.trim() == current.display().to_string())
+        .unwrap_or(false)
+    {
+        return;
+    }
+    if let Some(parent) = marker.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&marker, current.display().to_string());
+}
+
+/// Takes over the data folder a previous location used, when this run started
+/// from a fresh place and the old one still holds a config.
+///
+/// This is what makes "update in place" work for a portable copy: after the
+/// updater moves the binary, the settings and the token follow it instead of the
+/// user being sent back to the sign-in screen.
+pub fn adopt_previous_data_dir() {
+    let Some(marker) = handover_marker() else { return };
+    let Ok(previous) = fs::read_to_string(&marker) else { return };
+    let previous = PathBuf::from(previous.trim());
+    let current = portable_dir();
+    if previous == current {
+        return;
+    }
+    let source = previous.join("config.json");
+    let target = current.join("config.json");
+    if !source.is_file() || target.is_file() {
+        return;
+    }
+    // Copy rather than move: the old folder may be read-only, and leaving it in
+    // place costs nothing while a failed move would lose the settings.
+    if fs::copy(&source, &target).is_err() {
+        return;
+    }
+    for name in ["token"] {
+        let from = previous.join(name);
+        let to = current.join(name);
+        if from.is_file() && !to.is_file() {
+            let _ = fs::copy(&from, &to);
+        }
+    }
+    crate::startup_log::write(&format!(
+        "данные перенесены из {} в {}",
+        previous.display(),
+        current.display()
+    ));
+    remember_data_dir();
 }
 
 pub fn config_dir() -> PathBuf {
@@ -297,7 +367,7 @@ mod tests {
         };
         settings.sanitize();
         assert_eq!(settings.quality, 2);
-        assert_eq!(settings.lyrics_format, "none");
+        assert_eq!(settings.lyrics_format, "lrc");
         assert_eq!(settings.theme, "system");
         assert_eq!(settings.timeout, 1);
         assert_eq!(settings.cover_resolution, 100);

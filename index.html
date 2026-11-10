@@ -4,8 +4,109 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ym-dl</title>
+    <style>
+      /* The boot screen is inline so it paints on the first frame: loading the
+         stylesheet bundle first is what produced the white flash before. */
+      :root {
+        color-scheme: light dark;
+        --boot-surface: #fef7ff;
+        --boot-on-surface: #1d1b20;
+        --boot-primary: #6750a4;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --boot-surface: #141218;
+          --boot-on-surface: #e6e0e9;
+          --boot-primary: #d0bcff;
+        }
+      }
+      html[data-theme="light"] {
+        --boot-surface: #fef7ff;
+        --boot-on-surface: #1d1b20;
+      }
+      html[data-theme="dark"] {
+        --boot-surface: #141218;
+        --boot-on-surface: #e6e0e9;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--boot-surface);
+      }
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: grid;
+        place-content: center;
+        justify-items: center;
+        gap: 22px;
+        background: var(--boot-surface);
+        color: var(--boot-on-surface);
+        font-family: "Roboto Variable", "Roboto", "Segoe UI", system-ui, sans-serif;
+        transition: opacity 420ms cubic-bezier(0.2, 0, 0, 1),
+          transform 420ms cubic-bezier(0.2, 0, 0, 1);
+      }
+      #boot.leaving {
+        opacity: 0;
+        transform: scale(1.04);
+        pointer-events: none;
+      }
+      #boot .bars {
+        display: flex;
+        align-items: flex-end;
+        gap: 7px;
+        height: 52px;
+      }
+      #boot .bars span {
+        width: 9px;
+        border-radius: 5px;
+        background: var(--boot-primary);
+        animation: boot-pulse 1150ms cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        transform-origin: bottom;
+      }
+      #boot .bars span:nth-child(1) { height: 22px; animation-delay: 0ms; }
+      #boot .bars span:nth-child(2) { height: 40px; animation-delay: 130ms; }
+      #boot .bars span:nth-child(3) { height: 30px; animation-delay: 260ms; }
+      #boot .bars span:nth-child(4) { height: 46px; animation-delay: 390ms; }
+      @keyframes boot-pulse {
+        0%, 100% { transform: scaleY(0.45); opacity: 0.55; }
+        50% { transform: scaleY(1); opacity: 1; }
+      }
+      #boot .name {
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        opacity: 0.85;
+      }
+      #boot .hint {
+        font-size: 12px;
+        letter-spacing: 0.02em;
+        opacity: 0.55;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot .bars span { animation: none; transform: scaleY(0.8); }
+        #boot { transition-duration: 1ms; }
+      }
+    </style>
+    <script>
+      // Rust hands the saved theme over before any page script runs, so the boot
+      // screen matches the app instead of flashing the opposite colour.
+      (function () {
+        var theme = window.__YMDL_THEME;
+        if (theme === "dark" || theme === "light") {
+          document.documentElement.dataset.theme = theme;
+        }
+      })();
+    </script>
   </head>
   <body>
+    <div id="boot">
+      <div class="bars"><span></span><span></span><span></span><span></span></div>
+      <div class="name">ym-dl</div>
+      <div class="hint">Запускаю…</div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

@@ -23,3 +23,46 @@ async fn downloads_a_real_track_end_to_end() {
     }
     assert!(report.ok, "live download failed: {}", report.lines.join(" | "));
 }
+
+/// A track Yandex has synced lyrics for, which is what the LRC option is for.
+#[tokio::test]
+#[ignore = "needs a real token in ~/.ym-dl-token and network access"]
+async fn a_track_with_lyrics_gets_its_timings() {
+    let report = run_live_check("114784199", 2).await;
+    for line in &report.lines {
+        println!("{line}");
+    }
+    assert!(report.ok, "live download failed: {}", report.lines.join(" | "));
+    let lyrics = report
+        .lines
+        .iter()
+        .find(|line| line.starts_with("лирикс:"))
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        lyrics.contains("с таймингами"),
+        "тайминги не попали в файл: {}",
+        report.lines.join(" | ")
+    );
+}
+
+/// Yandex has no text for this track, so the lrclib fallback is what supplies it.
+#[tokio::test]
+#[ignore = "needs a real token in ~/.ym-dl-token and network access"]
+async fn the_lrclib_fallback_covers_a_track_yandex_lacks() {
+    let report = run_live_check("96109", 2).await;
+    for line in &report.lines {
+        println!("{line}");
+    }
+    let lyrics = report
+        .lines
+        .iter()
+        .find(|line| line.starts_with("лирикс:"))
+        .cloned()
+        .unwrap_or_else(|| "лирикса нет вовсе".into());
+    assert!(
+        lyrics.contains("lrclib"),
+        "резервный источник не сработал: {lyrics} | {}",
+        report.lines.join(" | ")
+    );
+}

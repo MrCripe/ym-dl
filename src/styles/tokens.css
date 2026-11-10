@@ -12,6 +12,10 @@
   --accent-primary-dark: #d0bcff;
   --accent-container-dark: #4f378b;
   --accent-on-container-dark: #eaddff;
+  --accent-secondary-light: #e8def8;
+  --accent-secondary-dark: #4a4458;
+  --accent-tertiary-light: #ffd8e4;
+  --accent-tertiary-dark: #633b48;
 
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --ease-emphasized: cubic-bezier(0.05, 0.7, 0.1, 1);
@@ -42,7 +46,9 @@
     "Helvetica Neue", sans-serif;
 }
 
-/* violet is the value already declared on :root, so it needs no block of its own. */
+/* Each accent carries its own secondary and tertiary containers. Leaving those
+   hardcoded is why picking a colour only repainted the primary buttons and the
+   rest of the app stayed lavender. */
 
 :root[data-accent="blue"] {
   --accent-primary-light: #0061a4;
@@ -51,6 +57,10 @@
   --accent-primary-dark: #9ecaff;
   --accent-container-dark: #00497d;
   --accent-on-container-dark: #d1e4ff;
+  --accent-secondary-light: #d5e6f7;
+  --accent-secondary-dark: #2d4864;
+  --accent-tertiary-light: #dfe3f9;
+  --accent-tertiary-dark: #3a4560;
 }
 
 :root[data-accent="green"] {
@@ -60,6 +70,10 @@
   --accent-primary-dark: #6ddbad;
   --accent-container-dark: #005139;
   --accent-on-container-dark: #89f8c7;
+  --accent-secondary-light: #cfe9dc;
+  --accent-secondary-dark: #1e4c3c;
+  --accent-tertiary-light: #d6ead1;
+  --accent-tertiary-dark: #2c4a2c;
 }
 
 :root[data-accent="orange"] {
@@ -69,6 +83,10 @@
   --accent-primary-dark: #ffb95c;
   --accent-container-dark: #693c00;
   --accent-on-container-dark: #ffddb8;
+  --accent-secondary-light: #ffe2c2;
+  --accent-secondary-dark: #5a3c14;
+  --accent-tertiary-light: #ffdfcf;
+  --accent-tertiary-dark: #5c3520;
 }
 
 :root[data-accent="pink"] {
@@ -78,6 +96,10 @@
   --accent-primary-dark: #ffb0cb;
   --accent-container-dark: #85264f;
   --accent-on-container-dark: #ffd9e4;
+  --accent-secondary-light: #ffd9e5;
+  --accent-secondary-dark: #5c2540;
+  --accent-tertiary-light: #ffdce4;
+  --accent-tertiary-dark: #5e2840;
 }
 
 :root[data-accent="teal"] {
@@ -87,6 +109,10 @@
   --accent-primary-dark: #80d4d9;
   --accent-container-dark: #004f53;
   --accent-on-container-dark: #9cf1f6;
+  --accent-secondary-light: #ccebee;
+  --accent-secondary-dark: #17474b;
+  --accent-tertiary-light: #d3e6dd;
+  --accent-tertiary-dark: #2b4a41;
 }
 
 :root,
@@ -98,11 +124,11 @@
   --on-primary-container: var(--accent-on-container-light);
   --secondary: #625b71;
   --on-secondary: #ffffff;
-  --secondary-container: #e8def8;
+  --secondary-container: var(--accent-secondary-light);
   --on-secondary-container: #1d192b;
   --tertiary: #7d5260;
   --on-tertiary: #ffffff;
-  --tertiary-container: #ffd8e4;
+  --tertiary-container: var(--accent-tertiary-light);
   --on-tertiary-container: #31111d;
   --error: #b3261e;
   --on-error: #ffffff;
@@ -142,11 +168,11 @@
   --on-primary-container: var(--accent-on-container-dark);
   --secondary: #ccc2dc;
   --on-secondary: #332d41;
-  --secondary-container: #4a4458;
+  --secondary-container: var(--accent-secondary-dark);
   --on-secondary-container: #e8def8;
   --tertiary: #efb8c8;
   --on-tertiary: #492532;
-  --tertiary-container: #633b48;
+  --tertiary-container: var(--accent-tertiary-dark);
   --on-tertiary-container: #ffd8e4;
   --error: #f2b8b5;
   --on-error: #601410;

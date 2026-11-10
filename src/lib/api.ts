@@ -11,6 +11,7 @@ export type Settings = {
   coverOriginal: boolean;
   coverResolution: number;
   lyricsFormat: "none" | "text" | "lrc";
+  lyricsFallback: boolean;
   compatibilityLevel: number;
   onlyMusic: boolean;
   stickToArtist: boolean;
@@ -97,6 +98,7 @@ export type UpdateEntry = {
   installed: string;
   latest: string;
   newer: boolean;
+  checked: boolean;
   detail: string;
 };
 
@@ -123,12 +125,13 @@ export const api = {
   hasToken: () => call<boolean>("has_token"),
   clearToken: () => call<void>("clear_token"),
   checkToken: (token: string) => call<AccountInfo>("check_token", { token }),
+  /// Opens the Yandex sign-in window and resolves once the token is captured.
+  loginYandex: () => call<AccountInfo>("login_yandex"),
   resolve: (url: string) => call<SourceInfo>("resolve_source", { url }),
   likes: () => call<SourceInfo>("load_likes"),
   start: (trackIds: string[]) => call<void>("start_download", { trackIds }),
   stop: () => call<boolean>("stop_download"),
-  updates: (appVersion: string) =>
-    call<UpdateEntry[]>("check_updates", { appVersion }),
+  updates: () => call<UpdateEntry[]>("check_updates"),
   environment: () => call<EnvironmentInfo>("environment"),
   postProcess: () => call<PostProcessStats>("post_process"),
   probeLossless: () => call<AccountInfo>("probe_lossless"),
