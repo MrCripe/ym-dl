@@ -9,7 +9,7 @@
 //
 // Usage: node scripts/fix-updater-json.mjs <owner/repo> <tag>
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -56,7 +56,15 @@ if (changed === 0) {
   process.exit(0);
 }
 
-const out = join(tmpdir(), `latest-${tag.replace(/[^\w.-]/g, "_")}.json`);
+// gh names the uploaded asset after the file, so the file has to be called
+// exactly `latest.json` — a temp name like `latest-v1.1.1.json` becomes a second,
+// useless asset and the real manifest stays stale.
+const outDir = mkdtempSync(join(tmpdir(), "ym-dl-manifest-"));
+const out = join(outDir, "latest.json");
 writeFileSync(out, JSON.stringify(manifest, null, 2));
-gh(["release", "upload", tag, out, "--repo", repo, "--clobber"]);
+
+// `--clobber` alone proved unreliable here: it left the old asset in place next
+// to the new one. Deleting first makes the replacement unambiguous.
+gh(["api", "-X", "DELETE", `repos/${repo}/releases/assets/${manifestAsset.id}`]);
+gh(["release", "upload", tag, out, "--repo", repo]);
 console.log(`latest.json обновлён: ${changed} адрес(ов) заменены на download-ссылки`);
