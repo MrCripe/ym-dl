@@ -1,0 +1,51 @@
+name: updater manifest
+
+# tauri-action writes latest.json while the release is still a draft, and a draft
+# has no browser download URL — so the manifest ends up pointing at
+# api.github.com/repos/…/releases/assets/<id>, which answers with JSON metadata
+# instead of the file. The in-app updater then downloads that JSON and fails the
+# signature check. Publishing the release fixes nothing by itself; the manifest has
+# to be rewritten, and this runs exactly then.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Тег опубликованного релиза (например v1.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Point latest.json at the release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+        run: node scripts/fix-updater-json.mjs "${{ github.repository }}" "$TAG"
+
+      - name: Check the manifest downloads
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+        run: |
+          url="https://github.com/${{ github.repository }}/releases/latest/download/latest.json"
+          body=$(curl -fsSL "$url")
+          echo "$body" | head -c 400
+          echo
+          # Every platform entry must be a release download link, not an API asset.
+          if echo "$body" | grep -q 'api.github.com/repos/.*/releases/assets/'; then
+            echo "::error::latest.json всё ещё указывает на API-адреса"
+            exit 1
+          fi
