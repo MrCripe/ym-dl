@@ -19,6 +19,7 @@ export default function Home() {
   const setAllTracks = useApp((state) => state.setAllTracks);
   const start = useApp((state) => state.start);
   const stop = useApp((state) => state.stop);
+  const toast = useApp((state) => state.toast);
 
   const [url, setUrl] = useState(settings?.lastUrl ?? "");
 
@@ -72,9 +73,14 @@ export default function Home() {
               onClick={async () => {
                 try {
                   const text = await readText();
-                  if (text?.trim()) setUrl(text.trim());
+                  if (text?.trim()) {
+                    setUrl(text.trim());
+                  } else {
+                    // Silence after a click reads as "nothing happened".
+                    toast(t("home.pasteEmpty"), "info");
+                  }
                 } catch {
-                  /* clipboard may be blocked; the field stays editable */
+                  toast(t("home.pasteFailed"), "error");
                 }
               }}
             />

@@ -374,5 +374,8 @@ pub struct EnvironmentInfo {
     /// Where the token actually lives: the credential store, or a file path when
     /// the system has no store and the plaintext fallback was used.
     pub token_store: String,
+    /// True when the app runs from an unpacked portable folder, where the built-in
+    /// updater cannot replace the binary in place.
+    pub portable: bool,
     pub os: String,
 }

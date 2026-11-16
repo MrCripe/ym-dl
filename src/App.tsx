@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp, type Page } from "./lib/store";
 import { useT } from "./lib/i18n";
-import { Icon, Button } from "./components/ui";
+import { Icon, Button, IconButton } from "./components/ui";
 import Wizard from "./pages/Wizard";
 import Home from "./pages/Home";
 import Downloads from "./pages/Downloads";
@@ -169,6 +169,58 @@ export default function App() {
           </div>
         ))}
       </div>
+
+      <UpdateBanner />
+    </div>
+  );
+}
+
+/**
+ * One-click update, shown wherever the user is.
+ *
+ * The startup check already knows the new version; before this, that knowledge
+ * only produced a toast pointing at the settings, where the "Обновить" button was
+ * not even rendered until "Проверить" was pressed again. Installing what the app
+ * already found is the whole point of a self-updating program.
+ */
+function UpdateBanner() {
+  const t = useT();
+  const update = useApp((state) => state.availableUpdate);
+  const progress = useApp((state) => state.updateProgress);
+  const portable = useApp((state) => state.portable);
+  const install = useApp((state) => state.installAvailableUpdate);
+  const dismiss = useApp((state) => state.dismissUpdate);
+
+  if (!update) return null;
+  const busy = progress !== null;
+
+  return (
+    <div className="update-banner animate-in" role="status">
+      <Icon name="system_update" filled />
+      <div className="grow">
+        <div className="md-body">{t("banner.updateReady", { version: update.version })}</div>
+        <div className="md-body-sm muted">
+          {/* A portable unpack has no installer to replace, so promising "it
+              installs itself" there would be a lie. */}
+          {portable ? t("banner.portableHint") : t("banner.updateHint")}
+        </div>
+      </div>
+      <Button
+        variant="filled"
+        size="compact"
+        icon="download"
+        disabled={busy}
+        onClick={() => void install()}
+      >
+        {!busy ? t("set.updateBtn") : progress > 0 ? `${progress}%` : t("set.downloading")}
+      </Button>
+      <IconButton
+        icon="close"
+        label={t("banner.later")}
+        size="small"
+        disabled={busy}
+        onClick={dismiss}
+      />
     </div>
   );
 }

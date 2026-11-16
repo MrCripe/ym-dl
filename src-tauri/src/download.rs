@@ -622,6 +622,12 @@ impl Job {
             }
         }
 
+        // No folder-wide sweep here. Every track this job wrote was already
+        // converted on the spot, so walking the download folder with ffprobe again
+        // only re-examined files the app did not touch — and the folder is now the
+        // user's whole music library. Old `.m4a` files are handled by the explicit
+        // "Перепаковать папку сейчас" button, where the cost is expected.
+
         let final_progress = JobProgress {
             done: shared.counters.done.load(Ordering::SeqCst),
             total: shared.total.load(Ordering::SeqCst),
@@ -634,23 +640,6 @@ impl Job {
             error: false,
         };
         let _ = shared.app.emit(EVENT_FINISHED, final_progress.clone());
-
-        // Maintenance sweep of the whole folder runs after the job is reported
-        // finished: it walks every file with ffprobe and must neither block the
-        // async runtime nor delay the "done" the user is waiting for.
-        if shared.settings.extract_flac && ffmpeg::available() {
-            shared.log("info", "Проверяю папку на настоящий FLAC…");
-            let root = target_dir.clone();
-            let stats = tauri::async_runtime::spawn_blocking(move || ffmpeg::post_process(&root))
-                .await
-                .unwrap_or_default();
-            if stats.converted > 0 {
-                shared.log("ok", format!("Извлечено FLAC из .m4a: {}", stats.converted));
-            }
-            if stats.failed > 0 {
-                shared.log("warn", format!("Не удалось перепаковать файлов: {}", stats.failed));
-            }
-        }
 
         Ok(final_progress)
     }

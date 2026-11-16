@@ -377,6 +377,7 @@ pub fn environment() -> EnvironmentInfo {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         config_path: config::config_path().display().to_string(),
         token_store: config::token_store_label(),
+        portable: config::is_portable(),
         os: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
     }
 }

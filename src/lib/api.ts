@@ -110,6 +110,7 @@ export type EnvironmentInfo = {
   appVersion: string;
   configPath: string;
   tokenStore: string;
+  portable: boolean;
   os: string;
 };
 

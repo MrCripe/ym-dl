@@ -43,12 +43,6 @@ const LAYOUTS: { key: string; hint: string; pattern: string; example: string }[]
     example: "Nirvana/Nevermind/05 Smells Like Teen Spirit.flac",
   },
   {
-    key: "layout.artist",
-    hint: "layout.artistHint",
-    pattern: "#track-artist/#album/#number-padded #title",
-    example: "Nirvana/Nevermind/05 Smells Like Teen Spirit.flac",
-  },
-  {
     key: "layout.year",
     hint: "layout.yearHint",
     pattern: "#album-artist/#year - #album/#number-padded #title",
@@ -91,6 +85,9 @@ export default function SettingsPage() {
       // the new build in place, which the plain version check cannot say.
       const available = await findUpdate();
       setPending(available);
+      // The banner is what installs it; keeping the two in sync means the same
+      // version is offered everywhere instead of each screen asking on its own.
+      useApp.setState({ availableUpdate: available });
       if (available) {
         toast(t("set.updateFound", { version: available.version }), "info");
       } else {
@@ -703,20 +700,18 @@ export default function SettingsPage() {
                     ? `${t("set.availableShort")} ${entry.latest}`
                     : t("set.actual")}
               </Badge>
-              {entry.newer && entry.kind === "app" && (
+              {entry.newer && entry.kind === "app" ? (
+                // The update itself is installed by the banner, not by sending the
+                // user to the release page: that link contradicted "updates itself".
                 <Button
-                  variant="tonal"
+                  variant="filled"
                   size="compact"
-                  icon="open_in_new"
-                  onClick={() => {
-                    void openUrl(`https://${entry.detail}/latest`).catch((error) =>
-                      toast(String((error as Error).message), "error"),
-                    );
-                  }}
+                  icon="system_update"
+                  onClick={() => void useApp.getState().installAvailableUpdate()}
                 >
-                  {t("set.releasePage")}
+                  {t("set.updateBtn")}
                 </Button>
-              )}
+              ) : null}
             </div>
           ))}
         </Section>

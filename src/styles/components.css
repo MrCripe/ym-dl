@@ -777,6 +777,29 @@
 
 /* --- snackbar / toast ------------------------------------------------- */
 
+/* Update banner: a strip above the toasts, visible on every screen, so installing
+   a version the app already found is one click and not a trip to the settings. */
+.update-banner {
+  position: fixed;
+  left: calc(var(--rail-width) + 24px);
+  right: 24px;
+  bottom: 24px;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
+  box-shadow: var(--shadow-3);
+}
+
+.update-banner > .material-symbols-rounded {
+  font-size: 22px;
+  flex: 0 0 auto;
+}
+
 .toast-host {
   position: fixed;
   left: 50%;

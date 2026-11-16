@@ -202,6 +202,16 @@ pub fn exe_dir() -> Option<PathBuf> {
         .and_then(|path| path.parent().map(Path::to_path_buf))
 }
 
+/// True when the app runs from a portable unpack — data next to the exe rather
+/// than in the profile.
+///
+/// The updater installs an NSIS/MSI build into the profile, so a portable copy
+/// cannot update itself in place: pressing "Обновить" there would install a second
+/// copy somewhere else. The interface says so instead of pretending.
+pub fn is_portable() -> bool {
+    exe_dir().map(|dir| dir.join("ym-dl-data").is_dir()).unwrap_or(false)
+}
+
 /// Portable data folder: everything the app owns lives next to the exe, so the
 /// whole thing can be moved on a flash drive. Falls back to the profile only if
 /// the exe folder is read-only.

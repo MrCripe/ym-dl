@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { api, subscribe, type AccountInfo, type JobProgress, type Settings, type SourceInfo, type TrackState } from "./api";
-import { findUpdate } from "./update";
+import { findUpdate, installUpdate, type AvailableUpdate } from "./update";
 import { resolveLang, translate } from "./i18n";
 
 export type Page = "home" | "downloads" | "settings";
@@ -27,6 +27,11 @@ type State = {
   tracks: TrackState[];
   logs: LogLine[];
   toasts: Toast[];
+  /** The version the startup check found, so any screen can offer the update. */
+  availableUpdate: AvailableUpdate | null;
+  updateProgress: number | null;
+  /** Portable unpack: the built-in updater cannot replace the binary in place. */
+  portable: boolean;
 
   init: () => Promise<void>;
   setPage: (page: Page) => void;
@@ -43,6 +48,8 @@ type State = {
   start: () => Promise<void>;
   stop: () => Promise<void>;
   openFolder: () => Promise<void>;
+  installAvailableUpdate: () => Promise<void>;
+  dismissUpdate: () => void;
   resetToken: () => Promise<void>;
   toast: (text: string, tone?: Toast["tone"], action?: string, page?: Page) => void;
   dismissToast: (id: number) => void;
@@ -79,6 +86,9 @@ export const useApp = create<State>((set, get) => ({
   tracks: [],
   logs: [],
   toasts: [],
+  availableUpdate: null,
+  updateProgress: null,
+  portable: false,
 
   init: async () => {
     // Registered before anything can fail: the download page must hear the job
@@ -153,19 +163,20 @@ export const useApp = create<State>((set, get) => ({
         });
     }
 
-    // Quiet startup update check: only a real update produces a message.
+    // Startup update check: a found update becomes a banner with its own button,
+    // so the user does not have to hunt for "Проверить" in the settings to install
+    // what the app already knows about.
+    // Whether this is a portable unpack matters for the update banner regardless
+    // of the auto-check setting.
+    api
+      .environment()
+      .then((env) => set({ portable: env.portable }))
+      .catch(() => undefined);
+
     if (settings.checkUpdates) {
       findUpdate()
         .then((update) => {
-          if (update) {
-            const lang = get().settings?.language;
-            get().toast(
-              tr(lang, "toast.updateAvailable", { version: update.version }),
-              "info",
-              tr(lang, "nav.settings"),
-              "settings",
-            );
-          }
+          if (update) set({ availableUpdate: update });
         })
         .catch(() => undefined);
     }
@@ -310,6 +321,26 @@ export const useApp = create<State>((set, get) => ({
   openFolder: async () => {
     await api.openDownloadDir();
   },
+
+  installAvailableUpdate: async () => {
+    const lang = get().settings?.language;
+    set({ updateProgress: 0 });
+    try {
+      await installUpdate(({ downloaded, total }) => {
+        set({
+          updateProgress:
+            total && total > 0 ? Math.min(100, Math.round((downloaded / total) * 100)) : 0,
+        });
+      });
+      // installUpdate relaunches the app; reaching here means it did not.
+      get().toast(tr(lang, "set.updateInstalled"), "success");
+    } catch (error) {
+      set({ updateProgress: null });
+      get().toast(tr(lang, "set.updateError", { error: (error as Error).message }), "error");
+    }
+  },
+
+  dismissUpdate: () => set({ availableUpdate: null }),
 
   resetToken: async () => {
     await api.clearToken();
