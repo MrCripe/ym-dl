@@ -413,12 +413,10 @@ pub async fn check_token(client: &Client) -> Result<AccountInfo> {
 
     // A real request is the only honest lossless check: `hasPlus` alone does not
     // prove the music service applies the subscription.
-    let (probe_id, probe_label) = probe_track(client).await;
-    info.probe_track = probe_label;
+    let probe_id = probe_track_id(client).await;
     match client.download_info(&probe_id, "lossless").await {
         Ok(details) => {
             info.probe_codec = details.codec.clone();
-            info.probe_quality = details.quality.clone();
             info.probe_bitrate = details.bitrate;
             info.lossless_ok = Some(matches!(details.codec.as_str(), "flac" | "flac-mp4"));
         }
@@ -432,13 +430,15 @@ pub async fn check_token(client: &Client) -> Result<AccountInfo> {
     Ok(info)
 }
 
-async fn probe_track(client: &Client) -> (String, String) {
+/// A track that is certainly playable, used to see what codec the server really
+/// returns. A liked track is preferred because it belongs to this account.
+async fn probe_track_id(client: &Client) -> String {
     if let Ok(ids) = client.likes_tracks(None).await {
         if let Some(first) = ids.first() {
-            return (first.clone(), "любимый трек".to_string());
+            return first.clone();
         }
     }
-    ("53404".to_string(), "проверочный трек".to_string())
+    "53404".to_string()
 }
 
 // --- sources -------------------------------------------------------------

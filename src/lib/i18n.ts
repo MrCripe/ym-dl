@@ -114,8 +114,6 @@ const ru: Dict = {
 
   // --- settings: common -------------------------------------------------
   "set.title": "Настройки",
-  "set.saving": "сохраняю…",
-  "set.saved": "сохранено",
   "set.unknown": "нет данных",
 
   // --- settings: account ------------------------------------------------
@@ -200,8 +198,11 @@ const ru: Dict = {
   "set.ffmpegMissing": "Не найден. Без него всё работает, но вместо FLAC останется .m4a",
   "set.ffmpegHow": "Как установить",
   "set.repack": "Перепаковать папку сейчас",
-  "set.repackDesc": "Пройти по папке и вытащить FLAC из уже скачанных .m4a",
+  "set.repackDesc": "Пройти по папке загрузки и вытащить FLAC из уже скачанных .m4a",
+  "set.repackWarn": "Будут перепакованы все .m4a в папке загрузки, и каждый исходный .m4a будет удалён после проверки. Файлы, скачанные не этой программой, тоже попадут под это.",
   "set.repackRun": "Запустить",
+  "set.repackConfirm": "Да, перепаковать",
+  "set.repackCancel": "Отмена",
   "set.repackDone": "FLAC извлечён: {converted}, ошибок: {failed}",
 
   // --- settings: appearance ---------------------------------------------
@@ -231,8 +232,6 @@ const ru: Dict = {
   "set.autoCheckDesc": "Раз в сессию, тихо, без ошибок в лицо",
   "set.checkNow": "Проверить сейчас",
   "set.checkNowDesc": "Приложение и ffmpeg",
-  "set.available": "Доступна версия",
-  "set.installedIs": "Сейчас установлена",
   "set.updateBtn": "Обновить",
   "set.downloading": "Скачиваю…",
   "set.upToDate": "Установлена последняя версия",
@@ -249,14 +248,20 @@ const ru: Dict = {
 
   // --- settings: token --------------------------------------------------
   "set.token": "Токен и файлы",
-  "set.tokenPath": "Где хранится токен",
-  "set.tokenPathDesc": "В системном хранилище паролей этого компьютера",
   "set.configPath": "Файл настроек",
   "set.configPathDesc": "JSON, можно править руками",
   "set.resetToken": "Заменить токен",
   "set.resetTokenDesc": "Сменить аккаунт Яндекс.Музыки",
   "set.resetBtn": "Сбросить токен",
-  "set.version": "Версия",
+  "set.about": "О программе",
+  "set.aboutApp": "ym-dl",
+  "set.aboutDesc": "Загрузчик Яндекс.Музыки. Не связан с Яндексом.",
+  "set.aboutSystem": "Как установлена",
+  "set.aboutPortable": "портативная сборка",
+  "set.aboutInstalled": "обычная установка",
+  "set.aboutLinks": "Ссылки",
+  "set.aboutLinksDesc": "Исходный код, что изменилось в новых версиях",
+  "set.aboutChanges": "Что нового",
 
   // --- path layout presets ---------------------------------------------
   "layout.likes": "Любимые треки",
@@ -275,7 +280,6 @@ const ru: Dict = {
   "toast.interrupted": "Загрузка прервана — причина в журнале",
   "toast.stopped": "Загрузка остановлена",
   "toast.finished": "Готово: {ok} скачано, {skipped} пропущено, {failed} с ошибкой",
-  "toast.updateAvailable": "Доступно обновление {version}",
   "banner.updateReady": "Готова версия {version}",
   "banner.updateHint": "Нажмите «Обновить» — скачается и установится само, программа перезапустится.",
   "banner.portableHint": "Это портативная сборка: новая версия скачается, но поставить её надо распаковкой архива — программа установит вторую копию.",
@@ -377,8 +381,6 @@ const en: Dict = {
   "wiz.clipboardBlocked": "The clipboard is unavailable — paste the token manually.",
 
   "set.title": "Settings",
-  "set.saving": "saving…",
-  "set.saved": "saved",
   "set.unknown": "no data",
 
   "set.account": "Account",
@@ -457,8 +459,11 @@ const en: Dict = {
   "set.ffmpegMissing": "Not found. Everything still works, but files stay .m4a instead of FLAC",
   "set.ffmpegHow": "How to install",
   "set.repack": "Repack the folder now",
-  "set.repackDesc": "Walk the folder and extract FLAC from the .m4a files already there",
+  "set.repackDesc": "Walk the download folder and extract FLAC from the .m4a files already there",
+  "set.repackWarn": "Every .m4a in the download folder is repacked and each source .m4a is deleted once verified. Files this program did not download are included.",
   "set.repackRun": "Run",
+  "set.repackConfirm": "Yes, repack",
+  "set.repackCancel": "Cancel",
   "set.repackDone": "FLAC extracted: {converted}, errors: {failed}",
 
   "set.appearance": "Appearance",
@@ -486,8 +491,6 @@ const en: Dict = {
   "set.autoCheckDesc": "Once per session, quietly, no errors in your face",
   "set.checkNow": "Check now",
   "set.checkNowDesc": "The app and ffmpeg",
-  "set.available": "Version available",
-  "set.installedIs": "Installed now",
   "set.updateBtn": "Update",
   "set.downloading": "Downloading…",
   "set.upToDate": "You have the latest version",
@@ -503,14 +506,20 @@ const en: Dict = {
   "set.ffmpegSeparate": "Updated separately from the app.",
 
   "set.token": "Token and files",
-  "set.tokenPath": "Where the token lives",
-  "set.tokenPathDesc": "In this computer's system password store",
   "set.configPath": "Settings file",
   "set.configPathDesc": "JSON, safe to edit by hand",
   "set.resetToken": "Replace the token",
   "set.resetTokenDesc": "Switch Yandex Music account",
   "set.resetBtn": "Reset token",
-  "set.version": "Version",
+  "set.about": "About",
+  "set.aboutApp": "ym-dl",
+  "set.aboutDesc": "A Yandex Music downloader. Not affiliated with Yandex.",
+  "set.aboutSystem": "How it is installed",
+  "set.aboutPortable": "portable build",
+  "set.aboutInstalled": "regular installation",
+  "set.aboutLinks": "Links",
+  "set.aboutLinksDesc": "Source code and what changed in each version",
+  "set.aboutChanges": "What's new",
 
   "layout.likes": "Liked tracks",
   "layout.likesHint": "title only",
@@ -527,7 +536,6 @@ const en: Dict = {
   "toast.interrupted": "The download was interrupted — see the log",
   "toast.stopped": "The download was stopped",
   "toast.finished": "Done: {ok} downloaded, {skipped} skipped, {failed} failed",
-  "toast.updateAvailable": "Version {version} is available",
   "banner.updateReady": "Version {version} is ready",
   "banner.updateHint": "Press “Update” — it downloads, installs itself and restarts.",
   "banner.portableHint": "This is a portable build: the new version downloads, but installing means unpacking the archive — otherwise a second copy appears.",

@@ -115,6 +115,9 @@ jobs:
           $stage = "portable-windows"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item "src-tauri/target/release/ym-dl.exe" $stage
+          # Marker for the app: this copy has no installer to replace, so the
+          # built-in updater must not promise an in-place update.
+          New-Item -ItemType File -Path "$stage/portable" | Out-Null
           @"
           ym-dl $version — портативная сборка для Windows
           ================================================

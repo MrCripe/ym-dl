@@ -376,7 +376,6 @@ pub fn environment() -> EnvironmentInfo {
             .unwrap_or_default(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         config_path: config::config_path().display().to_string(),
-        token_store: config::token_store_label(),
         portable: config::is_portable(),
         os: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
     }
@@ -416,12 +415,6 @@ pub fn open_download_dir(state: State<'_, AppState>) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     let mut command = {
         let mut command = std::process::Command::new("xdg-open");
-        command.arg(&dir);
-        command
-    };
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    let mut command = {
-        let mut command = std::process::Command::new("open");
         command.arg(&dir);
         command
     };

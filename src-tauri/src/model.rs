@@ -276,9 +276,7 @@ pub struct AccountInfo {
     pub expires: String,
     pub lossless_ok: Option<bool>,
     pub probe_codec: String,
-    pub probe_quality: String,
     pub probe_bitrate: u32,
-    pub probe_track: String,
     pub note: String,
 }
 
@@ -307,14 +305,10 @@ pub struct SourceInfo {
 #[serde(rename_all = "camelCase")]
 pub struct TrackState {
     pub index: usize,
-    pub total: usize,
     pub id: String,
     pub title: String,
     pub artist: String,
-    pub album: String,
     pub status: String,
-    pub codec: String,
-    pub bitrate: u32,
     pub done_bytes: u64,
     pub total_bytes: u64,
     pub path: String,
@@ -370,7 +364,6 @@ pub struct EnvironmentInfo {
     pub config_path: String,
     /// Where the token actually lives: the credential store, or a file path when
     /// the system has no store and the plaintext fallback was used.
-    pub token_store: String,
     /// True when the app runs from an unpacked portable folder, where the built-in
     /// updater cannot replace the binary in place.
     pub portable: bool,

@@ -30,6 +30,7 @@ export default function App() {
   const init = useApp((state) => state.init);
   const toasts = useApp((state) => state.toasts);
   const dismissToast = useApp((state) => state.dismissToast);
+  const availableUpdate = useApp((state) => state.availableUpdate);
 
   useEffect(() => {
     init().catch(() => undefined);
@@ -150,7 +151,9 @@ export default function App() {
         </div>
       </div>
 
-      <div className="toast-host">
+      {/* The banner is fixed to the bottom edge, so the toasts step up while it is
+          visible instead of hiding behind it. */}
+      <div className="toast-host" data-raised={availableUpdate ? "true" : undefined}>
         {toasts.map((toast) => (
           <div key={toast.id} className={`toast ${toast.tone === "info" ? "" : toast.tone}`}>
             <span className="grow md-body">{toast.text}</span>

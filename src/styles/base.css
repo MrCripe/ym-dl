@@ -296,6 +296,15 @@ textarea {
   justify-content: space-between;
 }
 
+/* Two buttons side by side on one settings row, e.g. the links in About. */
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .stack {
   display: flex;
   flex-direction: column;

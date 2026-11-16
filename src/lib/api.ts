@@ -37,9 +37,7 @@ export type AccountInfo = {
   expires: string;
   losslessOk: boolean | null;
   probeCodec: string;
-  probeQuality: string;
   probeBitrate: number;
-  probeTrack: string;
   note: string;
 };
 
@@ -62,14 +60,10 @@ export type SourceInfo = {
 
 export type TrackState = {
   index: number;
-  total: number;
   id: string;
   title: string;
   artist: string;
-  album: string;
   status: "pending" | "downloading" | "ok" | "failed" | "skipped" | "cancelled";
-  codec: string;
-  bitrate: number;
   doneBytes: number;
   totalBytes: number;
   path: string;
@@ -106,7 +100,6 @@ export type EnvironmentInfo = {
   ffmpegPath: string;
   appVersion: string;
   configPath: string;
-  tokenStore: string;
   portable: boolean;
   os: string;
 };

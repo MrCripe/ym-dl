@@ -202,14 +202,17 @@ pub fn exe_dir() -> Option<PathBuf> {
         .and_then(|path| path.parent().map(Path::to_path_buf))
 }
 
-/// True when the app runs from a portable unpack — data next to the exe rather
-/// than in the profile.
+/// True when the app runs from an unpacked portable archive.
+///
+/// The check must not look at `ym-dl-data`: `portable_dir()` creates that folder
+/// itself on the first run, so an installed build would look portable too. The
+/// portable archives ship a marker file next to the executable instead.
 ///
 /// The updater installs an NSIS/MSI build into the profile, so a portable copy
 /// cannot update itself in place: pressing "Обновить" there would install a second
 /// copy somewhere else. The interface says so instead of pretending.
 pub fn is_portable() -> bool {
-    exe_dir().map(|dir| dir.join("ym-dl-data").is_dir()).unwrap_or(false)
+    exe_dir().map(|dir| dir.join("portable").is_file()).unwrap_or(false)
 }
 
 /// Portable data folder: everything the app owns lives next to the exe, so the
@@ -369,21 +372,6 @@ fn keyring_clear() {
     if let Some(entry) = keyring_entry() {
         let _ = entry.delete_credential();
     }
-}
-
-/// Human-readable description of where the token is kept, for the settings screen.
-///
-/// Saying "credential store" while showing a file path was a contradiction: the
-/// file only exists on a system without a store.
-pub fn token_store_label() -> String {
-    if keyring_read().is_some() {
-        return format!("{KEYRING_SERVICE} / {KEYRING_ACCOUNT}");
-    }
-    let path = token_path();
-    if path.is_file() {
-        return path.display().to_string();
-    }
-    format!("{KEYRING_SERVICE} / {KEYRING_ACCOUNT}")
 }
 
 pub fn read_token() -> String {

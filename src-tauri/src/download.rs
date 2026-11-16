@@ -218,8 +218,6 @@ impl Shared {
         }
 
         self.update(index, |state| {
-            state.codec = codec.to_string();
-            state.bitrate = info.bitrate;
             state.status = "downloading".into();
         });
 
@@ -472,14 +470,10 @@ impl Job {
                 let item = api::track_item(track);
                 states.push(TrackState {
                     index,
-                    total: tracks.len(),
                     id: item.id,
                     title: item.title,
                     artist: item.artist,
-                    album: item.album,
                     status: "pending".into(),
-                    codec: String::new(),
-                    bitrate: 0,
                     done_bytes: 0,
                     total_bytes: 0,
                     path: String::new(),

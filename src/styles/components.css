@@ -812,6 +812,10 @@
   pointer-events: none;
 }
 
+.toast-host[data-raised] {
+  bottom: 108px;
+}
+
 .toast {
   pointer-events: auto;
   display: flex;

@@ -318,6 +318,10 @@ export const useApp = create<State>((set, get) => ({
   },
 
   installAvailableUpdate: async () => {
+    // A second click must not start a second download of the same installer: the
+    // button is disabled only after a re-render, so two clicks in one frame would
+    // otherwise both reach downloadAndInstall.
+    if (get().updateProgress !== null) return;
     const lang = get().settings?.language;
     set({ updateProgress: 0 });
     try {

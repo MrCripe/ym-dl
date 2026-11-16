@@ -60,7 +60,6 @@ export default function SettingsPage() {
   const t = useT();
   const lang = useLang();
   const draft = useApp((state) => state.settingsDraft);
-  const dirty = useApp((state) => state.settingsDirty);
   const patch = useApp((state) => state.patchSettings);
   const resetToken = useApp((state) => state.resetToken);
   const toast = useApp((state) => state.toast);
@@ -69,8 +68,7 @@ export default function SettingsPage() {
   const [env, setEnv] = useState<EnvironmentInfo | null>(null);
   const [updates, setUpdates] = useState<UpdateEntry[] | null>(null);
   const [checking, setChecking] = useState(false);
-  const pending = useApp((state) => state.availableUpdate);
-  const installUpdate = useApp((state) => state.installAvailableUpdate);
+  const [repackAsk, setRepackAsk] = useState(false);
 
   useEffect(() => {
     api.environment().then(setEnv).catch(() => undefined);
@@ -104,6 +102,8 @@ export default function SettingsPage() {
 
   if (!draft) return null;
 
+  const expiry = account?.expires ? formatExpiry(account.expires, lang) : "";
+
   const activeLayout =
     LAYOUTS.find((layout) => layout.pattern === draft.pathPattern)?.key ?? "custom";
 
@@ -113,17 +113,6 @@ export default function SettingsPage() {
         <div className="page-header">
           <div>
             <h1>{t("set.title")}</h1>
-          </div>
-          <div className="row">
-            {dirty ? (
-              <Badge tone="warning" icon="refresh">
-                {t("set.saving")}
-              </Badge>
-            ) : (
-              <Badge tone="success" icon="task_alt">
-                {t("set.saved")}
-              </Badge>
-            )}
           </div>
         </div>
 
@@ -143,10 +132,8 @@ export default function SettingsPage() {
           />
           <Row
             name={t("set.subUntil")}
-            desc={account?.expires ? formatExpiry(account.expires, lang) : undefined}
             control={
-              <Badge tone={account?.expires ? "primary" : "neutral"}>
-                {account?.expires ? formatExpiry(account.expires, lang) : t("set.subNoData")}              </Badge>
+              <Badge tone={expiry ? "primary" : "neutral"}>{expiry || t("set.subNoData")}</Badge>
             }
           />
           <Row
@@ -189,11 +176,12 @@ export default function SettingsPage() {
             name={t("set.folder")}
             desc={t("set.folderDefault")}
             control={
-              <div className="control field-holder">
+              <div className="field-holder">
                 <TextField
                   value={draft.downloadDir}
                   placeholder="~/Music"
                   icon="folder_open"
+                  quiet
                   onChange={(value) => patch({ downloadDir: value })}
                 />
               </div>
@@ -526,30 +514,47 @@ export default function SettingsPage() {
           />
           <Row
             name={t("set.repack")}
-            desc={t("set.repackDesc")}
+            desc={repackAsk ? t("set.repackWarn") : t("set.repackDesc")}
             control={
-              <Button
-                variant="tonal"
-                size="compact"
-                icon="build"
-                disabled={!env?.ffmpeg}
-                onClick={async () => {
-                  try {
-                    const stats = await api.postProcess();
-                    toast(
-                      t("set.repackDone", {
-                        converted: stats.converted,
-                        failed: stats.failed,
-                      }),
-                      stats.failed ? "error" : "success",
-                    );
-                  } catch (error) {
-                    toast(String((error as Error).message), "error");
-                  }
-                }}
-              >
-                {t("set.repackRun")}
-              </Button>
+              repackAsk ? (
+                <>
+                  <Button
+                    variant="danger-tonal"
+                    size="compact"
+                    icon="build"
+                    onClick={async () => {
+                      setRepackAsk(false);
+                      try {
+                        const stats = await api.postProcess();
+                        toast(
+                          t("set.repackDone", {
+                            converted: stats.converted,
+                            failed: stats.failed,
+                          }),
+                          stats.failed ? "error" : "success",
+                        );
+                      } catch (error) {
+                        toast(String((error as Error).message), "error");
+                      }
+                    }}
+                  >
+                    {t("set.repackConfirm")}
+                  </Button>
+                  <Button variant="text" size="compact" onClick={() => setRepackAsk(false)}>
+                    {t("set.repackCancel")}
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="tonal"
+                  size="compact"
+                  icon="build"
+                  disabled={!env?.ffmpeg}
+                  onClick={() => setRepackAsk(true)}
+                >
+                  {t("set.repackRun")}
+                </Button>
+              )
             }
           />
         </Section>
@@ -634,26 +639,6 @@ export default function SettingsPage() {
               </Button>
             }
           />
-          {pending ? (
-            <div className="update-row">
-              <div className="names">
-                <div className="md-body">
-                  {t("set.available")} {pending.version}
-                </div>
-                <div className="md-body-sm muted">
-                  {t("set.installedIs")} {pending.currentVersion}
-                </div>
-              </div>
-              <Button
-                variant="filled"
-                size="compact"
-                icon="system_update"
-                onClick={() => void installUpdate()}
-              >
-                {t("set.updateBtn")}
-              </Button>
-            </div>
-          ) : null}
           {updates?.map((entry) => (
             <div key={entry.kind} className="update-row">
               <div className="names">
@@ -674,28 +659,11 @@ export default function SettingsPage() {
                     ? `${t("set.availableShort")} ${entry.latest}`
                     : t("set.actual")}
               </Badge>
-              {entry.newer && entry.kind === "app" ? (
-                // The update itself is installed by the banner, not by sending the
-                // user to the release page: that link contradicted "updates itself".
-                <Button
-                  variant="filled"
-                  size="compact"
-                  icon="system_update"
-                  onClick={() => void installUpdate()}
-                >
-                  {t("set.updateBtn")}
-                </Button>
-              ) : null}
             </div>
           ))}
         </Section>
 
         <Section icon="key" title={t("set.token")}>
-          <Row
-            name={t("set.tokenPath")}
-            desc={t("set.tokenPathDesc")}
-            control={<span className="path-box">{env?.tokenStore ?? "—"}</span>}
-          />
           <Row
             name={t("set.configPath")}
             desc={t("set.configPathDesc")}
@@ -721,10 +689,52 @@ export default function SettingsPage() {
               </Button>
             }
           />
+        </Section>
+
+        <Section icon="info" title={t("set.about")}>
           <Row
-            name={t("set.version")}
-            desc={env?.os ?? ""}
+            name={t("set.aboutApp")}
+            desc={t("set.aboutDesc")}
             control={<Badge tone="primary">{env?.appVersion ?? "—"}</Badge>}
+          />
+          <Row
+            name={t("set.aboutSystem")}
+            desc={env?.os ?? ""}
+            control={
+              <span className="path-box">
+                {env?.portable ? t("set.aboutPortable") : t("set.aboutInstalled")}
+              </span>
+            }
+          />
+          <Row
+            name={t("set.aboutLinks")}
+            desc={t("set.aboutLinksDesc")}
+            control={
+              <div className="row-actions">
+                <Button
+                  variant="tonal"
+                  size="compact"
+                  icon="code"
+                  onClick={() =>
+                    void openUrl("https://github.com/MrCripe/ym-dl").catch(() => undefined)
+                  }
+                >
+                  GitHub
+                </Button>
+                <Button
+                  variant="tonal"
+                  size="compact"
+                  icon="history"
+                  onClick={() =>
+                    void openUrl("https://github.com/MrCripe/ym-dl/blob/master/CHANGELOG.md").catch(
+                      () => undefined,
+                    )
+                  }
+                >
+                  {t("set.aboutChanges")}
+                </Button>
+              </div>
+            }
           />
         </Section>
       </div>
