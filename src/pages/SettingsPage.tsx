@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, type EnvironmentInfo, type UpdateEntry } from "../lib/api";
-import { findUpdate, installUpdate, type AvailableUpdate } from "../lib/update";
+import { findUpdate } from "../lib/update";
 import { useApp } from "../lib/store";
 import { useT, useLang } from "../lib/i18n";
 import { Badge, Button, Icon, Segmented, Slider, Switch, TextField } from "../components/ui";
@@ -69,8 +69,8 @@ export default function SettingsPage() {
   const [env, setEnv] = useState<EnvironmentInfo | null>(null);
   const [updates, setUpdates] = useState<UpdateEntry[] | null>(null);
   const [checking, setChecking] = useState(false);
-  const [pending, setPending] = useState<AvailableUpdate | null>(null);
-  const [installing, setInstalling] = useState<number | null>(null);
+  const pending = useApp((state) => state.availableUpdate);
+  const installUpdate = useApp((state) => state.installAvailableUpdate);
 
   useEffect(() => {
     api.environment().then(setEnv).catch(() => undefined);
@@ -84,7 +84,6 @@ export default function SettingsPage() {
       // The updater reads the release manifest and knows whether it can install
       // the new build in place, which the plain version check cannot say.
       const available = await findUpdate();
-      setPending(available);
       // The banner is what installs it; keeping the two in sync means the same
       // version is offered everywhere instead of each screen asking on its own.
       useApp.setState({ availableUpdate: available });
@@ -96,30 +95,10 @@ export default function SettingsPage() {
     } catch (error) {
       // "Nothing to install" and "the check failed" are different answers; the
       // second one must not be shown as a green "you are up to date".
-      setPending(null);
+      useApp.setState({ availableUpdate: null });
       toast(t("set.updateFailed", { error: (error as Error).message }), "error");
     } finally {
       setChecking(false);
-    }
-  };
-
-  const applyUpdate = async () => {
-    setInstalling(0);
-    try {
-      await installUpdate(({ downloaded, total }) => {
-        if (total && total > 0) {
-          setInstalling(Math.min(100, Math.round((downloaded / total) * 100)));
-        } else {
-          // Without a content length there is no percentage, but the button still
-          // has to show that something is happening.
-          setInstalling(0);
-        }
-      });
-      // installUpdate restarts the app; reaching here means it did not.
-      toast(t("set.updateInstalled"), "success");
-    } catch (error) {
-      setInstalling(null);
-      toast(t("set.updateError", { error: (error as Error).message }), "error");
     }
   };
 
@@ -669,14 +648,9 @@ export default function SettingsPage() {
                 variant="filled"
                 size="compact"
                 icon="system_update"
-                onClick={applyUpdate}
-                disabled={installing !== null}
+                onClick={() => void installUpdate()}
               >
-                {installing === null
-                  ? t("set.updateBtn")
-                  : installing > 0
-                    ? `${installing}%`
-                    : t("set.downloading")}
+                {t("set.updateBtn")}
               </Button>
             </div>
           ) : null}
@@ -707,7 +681,7 @@ export default function SettingsPage() {
                   variant="filled"
                   size="compact"
                   icon="system_update"
-                  onClick={() => void useApp.getState().installAvailableUpdate()}
+                  onClick={() => void installUpdate()}
                 >
                   {t("set.updateBtn")}
                 </Button>

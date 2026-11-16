@@ -305,8 +305,7 @@ impl Client {
         url: &str,
         on_chunk: &mut impl FnMut(u64, u64) -> bool,
     ) -> Result<Option<Vec<u8>>> {
-        use futures_util::StreamExt;
-        let response = self
+        let mut response = self
             .http
             .get(url)
             .headers(self.mobile_headers())
@@ -323,9 +322,9 @@ impl Client {
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(0);
         let mut body: Vec<u8> = Vec::with_capacity(total as usize);
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.context("обрыв соединения при загрузке аудио")?;
+        // `chunk()` is already on the response; a stream adapter only to call
+        // `next()` cost a dependency.
+        while let Some(chunk) = response.chunk().await.context("обрыв соединения при загрузке аудио")? {
             body.extend_from_slice(&chunk);
             if !on_chunk(body.len() as u64, total) {
                 return Ok(None);
@@ -396,19 +395,15 @@ pub async fn check_token(client: &Client) -> Result<AccountInfo> {
             .display_name
             .or(account.full_name)
             .unwrap_or_default();
-        info.family_member = account.non_owner_family_member;
     }
     info.has_plus = status.plus.map(|plus| plus.has_plus).unwrap_or(false);
+    // The expiry is the only thing the interface shows from here; the permission
+    // list and the product id were never read.
     if let Some(permissions) = status.permissions {
-        info.permissions = permissions.values.join(", ");
         info.expires = permissions.until.unwrap_or_default();
     }
     if let Some(subscription) = status.subscription {
         if let Some(first) = subscription.auto_renewable.into_iter().next() {
-            info.product_id = first
-                .product
-                .and_then(|product| product.product_id)
-                .unwrap_or_default();
             if info.expires.is_empty() {
                 info.expires = first.expires.unwrap_or_default();
             }

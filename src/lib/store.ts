@@ -35,11 +35,9 @@ type State = {
 
   init: () => Promise<void>;
   setPage: (page: Page) => void;
-  setSettings: (settings: Settings) => Promise<void>;
   patchSettings: (values: Partial<Settings>) => void;
   saveSettingsDraft: () => Promise<void>;
   flushSettings: () => Promise<void>;
-  setAccount: (account: AccountInfo | null) => void;
   finishWizard: (account: AccountInfo) => Promise<void>;
   resolve: (url: string) => Promise<void>;
   loadLikes: () => Promise<void>;
@@ -119,7 +117,11 @@ export const useApp = create<State>((set, get) => ({
                   skipped: progress.skipped,
                   failed: progress.failed,
                 }),
-          progress.error || progress.failed > 0 ? "error" : progress.cancelled ? "info" : "success",
+          progress.error || progress.failed > 0
+            ? "error"
+            : progress.cancelled
+              ? "info"
+              : "success",
           tr(lang, "nav.downloads"),
           "downloads",
         );
@@ -183,13 +185,6 @@ export const useApp = create<State>((set, get) => ({
   },
 
   setPage: (page) => set({ page }),
-
-  setSettings: async (settings) => {
-    const saved = await api.saveSettings(settings);
-    set({ settings: saved, settingsDraft: saved, settingsDirty: false });
-  },
-
-  setAccount: (account) => set({ account }),
 
   patchSettings: (values) => {
     set((current) => {

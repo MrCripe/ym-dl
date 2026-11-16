@@ -273,9 +273,6 @@ pub struct AccountInfo {
     pub login: String,
     pub name: String,
     pub has_plus: bool,
-    pub family_member: bool,
-    pub product_id: String,
-    pub permissions: String,
     pub expires: String,
     pub lossless_ok: Option<bool>,
     pub probe_codec: String,
@@ -335,8 +332,8 @@ pub struct JobProgress {
     pub running: bool,
     pub stopping: bool,
     pub cancelled: bool,
-    /// The job itself blew up (as opposed to individual tracks failing), so the
-    /// UI must not report a clean finish.
+    /// The job itself blew up (as opposed to individual tracks failing), so the UI
+    /// must not report a clean finish. Set only when the whole job fails to start.
     pub error: bool,
 }
 

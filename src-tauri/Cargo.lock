@@ -6223,7 +6223,6 @@ dependencies = [
  "base64 0.22.1",
  "ctr",
  "directories",
- "futures-util",
  "hmac 0.12.1",
  "keyring",
  "lofty",

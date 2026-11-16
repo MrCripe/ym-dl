@@ -67,37 +67,11 @@ textarea {
 
 /* --- typography roles ------------------------------------------------- */
 
-.md-display {
-  font-size: 45px;
-  line-height: 52px;
-  font-weight: 400;
-  letter-spacing: 0;
-}
-
-.md-headline {
-  font-size: 28px;
-  line-height: 36px;
-  font-weight: 400;
-}
-
-.md-title-lg {
-  font-size: 22px;
-  line-height: 28px;
-  font-weight: 500;
-}
-
 .md-title {
   font-size: 16px;
   line-height: 24px;
   font-weight: 500;
   letter-spacing: 0.15px;
-}
-
-.md-title-sm {
-  font-size: 14px;
-  line-height: 20px;
-  font-weight: 500;
-  letter-spacing: 0.1px;
 }
 
 .md-body {
@@ -110,20 +84,6 @@ textarea {
   font-size: 12px;
   line-height: 16px;
   letter-spacing: 0.4px;
-}
-
-.md-label {
-  font-size: 14px;
-  line-height: 20px;
-  font-weight: 500;
-  letter-spacing: 0.1px;
-}
-
-.md-label-sm {
-  font-size: 11px;
-  line-height: 16px;
-  font-weight: 500;
-  letter-spacing: 0.5px;
 }
 
 .muted {
@@ -259,21 +219,6 @@ textarea {
 }
 
 /* --- shared surfaces -------------------------------------------------- */
-
-.surface-card {
-  background: var(--surface-container);
-  border-radius: var(--radius-lg);
-  padding: 20px;
-}
-
-.surface-card.low {
-  background: var(--surface-low);
-}
-
-.surface-card.outlined {
-  background: var(--surface);
-  border: 1px solid var(--outline-variant);
-}
 
 .section-title {
   display: flex;

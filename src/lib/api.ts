@@ -34,9 +34,6 @@ export type AccountInfo = {
   login: string;
   name: string;
   hasPlus: boolean;
-  familyMember: boolean;
-  productId: string;
-  permissions: string;
   expires: string;
   losslessOk: boolean | null;
   probeCodec: string;
