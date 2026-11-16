@@ -377,6 +377,9 @@ pub fn environment() -> EnvironmentInfo {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         config_path: config::config_path().display().to_string(),
         portable: config::is_portable(),
+        // Where the token actually ended up, so the settings screen can warn when
+        // it is a file on disk rather than a system password store.
+        token_file: config::token_home() == config::TokenHome::File,
         os: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
     }
 }

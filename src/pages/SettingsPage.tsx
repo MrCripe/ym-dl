@@ -136,6 +136,15 @@ export default function SettingsPage() {
               <Badge tone={expiry ? "primary" : "neutral"}>{expiry || t("set.subNoData")}</Badge>
             }
           />
+          {/* Only shown when the fallback is actually in use: a password store that
+              answered is the normal case and needs no comment. */}
+          {env?.tokenFile ? (
+            <Row
+              name={t("set.tokenFile")}
+              desc={t("set.tokenFileDesc")}
+              control={<Badge tone="warning" icon="warning">{t("set.tokenFileBadge")}</Badge>}
+            />
+          ) : null}
           <Row
             name={t("set.lossless")}
             desc={
@@ -259,6 +268,7 @@ export default function SettingsPage() {
                 <TextField
                   value={draft.pathPattern}
                   icon="edit"
+                  quiet
                   onChange={(value) => patch({ pathPattern: value })}
                 />
               </div>

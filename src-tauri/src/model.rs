@@ -367,5 +367,7 @@ pub struct EnvironmentInfo {
     /// True when the app runs from an unpacked portable folder, where the built-in
     /// updater cannot replace the binary in place.
     pub portable: bool,
+    /// True when the token is currently sitting in a file, not in the store.
+    pub token_file: bool,
     pub os: String,
 }

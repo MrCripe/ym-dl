@@ -374,6 +374,32 @@ fn keyring_clear() {
     }
 }
 
+/// Where the token actually ended up.
+///
+/// The system store is the intended home, but it is not always there: a Linux
+/// session without Secret Service, a locked keyring, a stripped container. Writing
+/// the token to a file in that case is what keeps the app usable, and the interface
+/// says so instead of letting the user believe it is in a password store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenHome {
+    /// In the system credential store.
+    Store,
+    /// In `token_path()` because no store answered.
+    File,
+    /// No token at all.
+    None,
+}
+
+pub fn token_home() -> TokenHome {
+    if keyring_read().is_some() {
+        return TokenHome::Store;
+    }
+    if token_path().is_file() || legacy_token_path().is_file() {
+        return TokenHome::File;
+    }
+    TokenHome::None
+}
+
 pub fn read_token() -> String {
     // The credential store wins: it is where a token is written now.
     if let Some(token) = keyring_read() {
@@ -550,5 +576,30 @@ mod tests {
     fn portable_dir_is_writable() {
         let dir = portable_dir();
         assert!(dir_writable(&dir), "portable data dir must be writable: {}", dir.display());
+    }
+
+    /// The file fallback is what keeps the app usable where no password store
+    /// answers, so it has to work on its own and must not leave the secret readable
+    /// by other accounts.
+    #[test]
+    fn the_token_file_fallback_is_private() {
+        // Under `target/`: the test binary is known to be able to write there,
+        // while a CI sandbox may deny creating folders in the system temp dir.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("token-test");
+        let path = dir.join("token");
+        write_atomic(&path, b"secret-token").expect("the fallback must be able to write");
+
+        assert_eq!(fs::read_to_string(&path).unwrap().trim(), "secret-token");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "token file must not be group/world readable");
+        }
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

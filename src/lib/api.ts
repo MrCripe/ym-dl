@@ -101,6 +101,7 @@ export type EnvironmentInfo = {
   appVersion: string;
   configPath: string;
   portable: boolean;
+  tokenFile: boolean;
   os: string;
 };
 
