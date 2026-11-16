@@ -1,10 +1,10 @@
 [package]
 name = "ym-dl"
-version = "1.1.1"
+version = "1.2.0"
 description = "Загрузчик Яндекс.Музыки"
 authors = ["ym-dl"]
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.88"
 
 [lib]
 name = "ym_dl_lib"
@@ -38,8 +38,12 @@ base64 = "0.22"
 aes = "0.8"
 ctr = "0.9"
 directories = "6"
+# System credential store: Windows Credential Manager, Secret Service on Linux.
+# The token is a password to the music account and does not belong in a plain file.
+keyring = { version = "4", features = ["v1"] }
 anyhow = "1"
 lofty = "0.22"
+tauri-plugin-clipboard-manager = "2"
 
 [profile.release]
 codegen-units = 1

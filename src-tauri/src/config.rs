@@ -122,8 +122,8 @@ pub fn home_dir() -> PathBuf {
 /// Where downloads go when the user has not chosen a folder.
 ///
 /// Next to the executable is the portable choice and the only one that works
-/// when the profile is locked down; the old `~/Music/lmao` is used only if the
-/// exe folder turns out to be read-only (an installed build in Program Files).
+/// when the profile is locked down; the standard `~/Music/ym-dl` is used only if
+/// the exe folder turns out to be read-only (an installed build in Program Files).
 pub fn default_download_dir() -> PathBuf {
     if let Some(dir) = exe_dir() {
         let candidate = dir.join("Music");
@@ -131,7 +131,26 @@ pub fn default_download_dir() -> PathBuf {
             return candidate;
         }
     }
-    home_dir().join("Music").join("lmao")
+    home_dir().join("Music").join("ym-dl")
+}
+
+/// The folder name an earlier build used as its fallback. Kept only so an
+/// existing library can be picked up instead of looking like it vanished.
+const LEGACY_DOWNLOAD_DIR: &str = "lmao";
+
+/// Adopts the library a previous build wrote to `~/Music/lmao`.
+///
+/// Returns the folder when it exists and the new default does not, so the first
+/// launch after the rename finds the old music instead of an empty folder. The
+/// files are not moved: `~/Music/lmao` may hold a large library, and a silent
+/// copy of several gigabytes is not something to do on startup.
+pub fn legacy_download_dir() -> Option<PathBuf> {
+    let legacy = home_dir().join("Music").join(LEGACY_DOWNLOAD_DIR);
+    if legacy.is_dir() {
+        Some(legacy)
+    } else {
+        None
+    }
 }
 
 /// True when `dir` exists and a file can actually be created in it. Creating the
@@ -270,7 +289,22 @@ pub fn load_settings() -> Settings {
         .and_then(|text| serde_json::from_str::<Settings>(&text).ok())
         .unwrap_or_default();
     settings.sanitize();
+    adopt_legacy_download_dir(&mut settings);
     settings
+}
+
+/// Points an untouched setting at the library an earlier build created in
+/// `~/Music/lmao`, so renaming the default does not make a downloaded collection
+/// look like it vanished. An explicitly chosen folder is never overridden.
+fn adopt_legacy_download_dir(settings: &mut Settings) {
+    if !settings.download_dir.trim().is_empty() {
+        return;
+    }
+    let Some(legacy) = legacy_download_dir() else { return };
+    if default_download_dir().is_dir() {
+        return;
+    }
+    settings.download_dir = legacy.display().to_string();
 }
 
 pub fn save_settings(settings: &Settings) -> Result<()> {
@@ -285,19 +319,71 @@ fn legacy_token_path() -> PathBuf {
     home_dir().join(".ym-dl-token")
 }
 
-pub fn read_token() -> String {
-    if let Ok(value) = fs::read_to_string(token_path()) {
-        return value.trim().to_string();
+/// Service and account names under which the token lives in the system
+/// credential store.
+const KEYRING_SERVICE: &str = "ym-dl";
+const KEYRING_ACCOUNT: &str = "yandex-music";
+
+/// The system credential store: Windows Credential Manager on Windows, Secret
+/// Service on Linux.
+///
+/// A token is a password to the user's music account, so it belongs where the
+/// system keeps passwords rather than in a plain file next to the program. This
+/// returns `None` when no store is available — a Linux session without a running
+/// Secret Service, or a locked-down container — and the caller then falls back to
+/// the file so the app still works.
+fn keyring_entry() -> Option<keyring::Entry> {
+    keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).ok()
+}
+
+fn keyring_read() -> Option<String> {
+    let token = keyring_entry()?.get_password().ok()?;
+    let trimmed = token.trim().to_string();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn keyring_write(token: &str) -> Result<()> {
+    keyring_entry()
+        .context("системное хранилище паролей недоступно")?
+        .set_password(token)
+        .context("не удалось сохранить токен в системное хранилище")
+}
+
+fn keyring_clear() {
+    if let Some(entry) = keyring_entry() {
+        let _ = entry.delete_credential();
     }
-    // One-time migration: an existing installation keeps its login.
+}
+
+pub fn read_token() -> String {
+    // The credential store wins: it is where a token is written now.
+    if let Some(token) = keyring_read() {
+        // A plaintext copy may survive from an older build or a fallback write;
+        // it is no longer read, so leaving it behind only leaks the secret.
+        let _ = fs::remove_file(token_path());
+        let _ = fs::remove_file(legacy_token_path());
+        return token;
+    }
+    if let Ok(value) = fs::read_to_string(token_path()) {
+        let trimmed = value.trim().to_string();
+        if !trimmed.is_empty() {
+            // A file left by an older build: move it into the store so the secret
+            // stops sitting on disk in the open.
+            if keyring_write(&trimmed).is_ok() {
+                let _ = fs::remove_file(token_path());
+            }
+            return trimmed;
+        }
+    }
+    // One-time migration from the pre-portable location.
     let legacy = legacy_token_path();
     if let Ok(value) = fs::read_to_string(&legacy) {
         let trimmed = value.trim().to_string();
-        if !trimmed.is_empty() && write_token(&trimmed).is_ok() {
+        if !trimmed.is_empty() {
+            let _ = write_token(&trimmed);
             let _ = fs::remove_file(&legacy);
             return trimmed;
         }
-        return trimmed;
     }
     std::env::var("YM_TOKEN").unwrap_or_default()
 }
@@ -307,12 +393,23 @@ pub fn write_token(token: &str) -> Result<()> {
     if trimmed.is_empty() {
         return clear_token();
     }
-    write_atomic(&token_path(), trimmed.as_bytes())
+    if let Err(error) = keyring_write(trimmed) {
+        // Keep the app usable where no store exists, but say so instead of
+        // silently writing the secret to disk.
+        crate::startup_log::write(&format!(
+            "токен хранится в файле: {error:#} — система без хранилища паролей"
+        ));
+        return write_atomic(&token_path(), trimmed.as_bytes());
+    }
+    // Do not leave an older plaintext copy behind.
+    let _ = fs::remove_file(token_path());
+    Ok(())
 }
 
 pub fn clear_token() -> Result<()> {
-    // Both locations: the portable one and the file an older build used, or a
-    // "reset" would silently keep the old login alive.
+    keyring_clear();
+    // Both file locations too: the portable one and the file an older build used,
+    // or a "reset" would silently keep the old login alive.
     let mut last_error = None;
     for path in [token_path(), legacy_token_path()] {
         match fs::remove_file(&path) {
@@ -349,6 +446,18 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_explicit_download_dir_is_never_replaced() {
+        // The rename of the default folder must not move a library the user chose
+        // themselves, so an explicit path survives untouched.
+        let mut settings = Settings {
+            download_dir: "D:/Music/mine".into(),
+            ..Settings::default()
+        };
+        adopt_legacy_download_dir(&mut settings);
+        assert_eq!(settings.download_dir, "D:/Music/mine");
+    }
 
     #[test]
     fn sanitize_clamps_values() {
@@ -388,7 +497,7 @@ mod tests {
         let dir = settings.target_dir();
         assert!(dir_writable(&dir), "default download dir must accept writes: {}", dir.display());
         assert!(
-            dir.ends_with("Music") || dir.ends_with("Music/lmao") || dir.ends_with("Music\\lmao"),
+            dir.ends_with("Music") || dir.ends_with("Music/ym-dl") || dir.ends_with("Music\\ym-dl"),
             "unexpected default: {}",
             dir.display()
         );

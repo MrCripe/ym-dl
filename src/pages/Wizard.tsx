@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, type AccountInfo } from "../lib/api";
 import { useApp } from "../lib/store";
@@ -22,10 +23,9 @@ export default function Wizard() {
     if (!manual) return;
     // Pre-fill from the clipboard only when it looks like a token: saves a paste
     // without ever guessing wrong.
-    navigator.clipboard
-      ?.readText()
+    readText()
       .then((text) => {
-        const trimmed = text.trim();
+        const trimmed = (text ?? "").trim();
         if (trimmed.length > 30 && !trimmed.includes(" ")) setToken(trimmed);
       })
       .catch(() => undefined);
@@ -129,8 +129,8 @@ export default function Wizard() {
                     icon="content_paste"
                     onClick={async () => {
                       try {
-                        const text = await navigator.clipboard.readText();
-                        if (text.trim()) {
+                        const text = await readText();
+                        if (text?.trim()) {
                           setToken(text.trim());
                           setError("");
                         }

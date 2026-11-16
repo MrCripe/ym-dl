@@ -2,7 +2,7 @@
 
 Collects every icon name the frontend asks for, then writes
 src/assets/icons.woff2 plus src/styles/icons.css with a matching @font-face.
-Run from the repo root:  python _extract/make_web_icons.py
+Run from the repo root:  python tools/make_web_icons.py
 """
 
 import re

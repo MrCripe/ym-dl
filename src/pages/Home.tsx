@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { useApp } from "../lib/store";
 import { Badge, Button, Checkbox, Icon, IconButton, TextField } from "../components/ui";
 
@@ -26,7 +27,7 @@ export default function Home() {
 
   const targetPath = settings?.downloadDir?.trim()
     ? settings.downloadDir
-    : "~/Music/lmao";
+    : "~/Music/ym-dl";
 
   return (
     <div className="page">
@@ -70,8 +71,8 @@ export default function Home() {
               variant="tonal"
               onClick={async () => {
                 try {
-                  const text = await navigator.clipboard.readText();
-                  if (text.trim()) setUrl(text.trim());
+                  const text = await readText();
+                  if (text?.trim()) setUrl(text.trim());
                 } catch {
                   /* clipboard may be blocked; the field stays editable */
                 }

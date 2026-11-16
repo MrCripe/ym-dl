@@ -4,8 +4,8 @@ dist/
 .wvdata/
 src-tauri/target/
 src-tauri/gen/
-_extract/msr*.ttf
-_extract/*.log
+tools/msr*.ttf
+tools/*.log
 *.log
 # Runtime state written next to the portable binary.
 src-tauri/target/release/webview/

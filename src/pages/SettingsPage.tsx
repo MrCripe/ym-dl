@@ -169,12 +169,12 @@ export default function SettingsPage() {
         <Section icon="folder" title="Куда и в каком качестве">
           <Row
             name="Папка загрузки"
-            desc="Пусто — ~/Music/lmao"
+            desc="Пусто — ~/Music/ym-dl"
             control={
               <div className="control field-holder">
                 <TextField
                   value={draft.downloadDir}
-                  placeholder="~/Music/lmao"
+                  placeholder="~/Music/ym-dl"
                   icon="folder_open"
                   onChange={(value) => patch({ downloadDir: value })}
                 />
@@ -215,7 +215,7 @@ export default function SettingsPage() {
           />
           <Row
             name="Шаблон пути"
-            desc="#track-artist, #album-artist, #title, #album, #year, #number, #number-padded, #disc-number, #track-id, #album-id, #artist-id"
+            desc="#track-artist - #title даёт «Nirvana - Smells Like Teen Spirit». Ещё: #album, #album-artist, #year, #number, #number-padded, #disc-number, #track-id, #album-id, #artist-id"
             control={
               <div className="control field-holder">
                 <TextField
@@ -309,7 +309,7 @@ export default function SettingsPage() {
           />
           <Row
             name="Уровень совместимости"
-            desc="0 — стандартные теги mutagen, 1 — исполнители через «; » для плееров"
+            desc="0 — обычные теги, 1 — несколько исполнителей через «; » для плееров"
             control={
               <Segmented
                 value={draft.compatibilityLevel}
@@ -348,7 +348,7 @@ export default function SettingsPage() {
           />
           <Row
             name="Не чистить имена файлов"
-            desc="Опасный режим: недопустимые символы останутся в пути"
+            desc="Оставьте выключенным: иначе символы вроде / и : попадут в имя файла и запись упадёт с ошибкой"
             control={
               <Switch
                 checked={draft.unsafePath}
@@ -375,7 +375,7 @@ export default function SettingsPage() {
           />
         </Section>
 
-        <Section icon="network_check" title="Сеть и лимиты">
+        <Section icon="network_check" title="Сеть и лимиты" collapsible>
           <Row
             name="Таймаут запроса"
             desc="Секунды ожидания ответа сервера"
@@ -456,7 +456,7 @@ export default function SettingsPage() {
             }
           />
           <Row
-            name="Старые lossy — в _old_m4a"
+            name="Старые .m4a — в папку _old_m4a"
             desc="Чтобы пропуск готовых файлов не блокировал перекачивание"
             control={
               <Switch
@@ -468,11 +468,28 @@ export default function SettingsPage() {
           />
           <Row
             name="ffmpeg"
-            desc={env?.ffmpeg ? env.ffmpegPath : "Не найден — FLAC останется .m4a"}
+            desc={
+              env?.ffmpeg && env?.ffprobe
+                ? env.ffmpegPath
+                : "Не найден. Без него всё работает, но вместо FLAC останется .m4a"
+            }
             control={
-              <Badge tone={env?.ffmpeg && env?.ffprobe ? "success" : "error"} icon="terminal">
-                {env?.ffmpeg && env?.ffprobe ? "готов" : "нет"}
-              </Badge>
+              env?.ffmpeg && env?.ffprobe ? (
+                <Badge tone="success" icon="check">
+                  готов
+                </Badge>
+              ) : (
+                <Button
+                  variant="tonal"
+                  size="compact"
+                  icon="help"
+                  onClick={() =>
+                    void openUrl("https://www.gyan.dev/ffmpeg/builds/").catch(() => undefined)
+                  }
+                >
+                  Как установить
+                </Button>
+              )
             }
           />
           <Row
@@ -663,18 +680,34 @@ function Section({
   icon,
   title,
   children,
+  collapsible = false,
 }: {
   icon: string;
   title: string;
   children: ReactNode;
+  /** Advanced settings start folded: they are rarely touched and the numbers
+   *  mean nothing to a first-time user. */
+  collapsible?: boolean;
 }) {
+  const [open, setOpen] = useState(!collapsible);
   return (
     <>
       <div className="section-title">
         <Icon name={icon} filled />
         {title}
+        {collapsible ? (
+          <button
+            type="button"
+            className={`section-toggle${open ? " open" : ""}`}
+            aria-expanded={open}
+            aria-label={open ? `Свернуть «${title}»` : `Развернуть «${title}»`}
+            onClick={() => setOpen((value) => !value)}
+          >
+            <span className="chevron" aria-hidden />
+          </button>
+        ) : null}
       </div>
-      <div className="setting-card">{children}</div>
+      {open ? <div className="setting-card">{children}</div> : null}
     </>
   );
 }

@@ -78,7 +78,9 @@ fn create_window(app: &tauri::App, theme: &str) -> Result<(), String> {
         }
         startup_log::report_dir("profile", &data_dir);
         match WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
-            .title("ym-dl")
+            // Shown in the taskbar and the window switcher, where a bare "ym-dl"
+            // tells the user nothing about what the window is.
+            .title("ym-dl — Яндекс.Музыка")
             .inner_size(1180.0, 780.0)
             .min_inner_size(960.0, 640.0)
             .center()
@@ -139,6 +141,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Reading the clipboard through the webview makes WebView2 show a
+        // permission bubble ("Сайт http://tauri.localhost хочет…"), which looks
+        // alarming in a desktop app. The native plugin reads it silently.
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState::new(settings))
         .setup(move |app| {
             // A window that never opens must not look like a silent crash: the
