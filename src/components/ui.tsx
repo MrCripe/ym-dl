@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useId, useState, type CSSProperties, type ReactNode } from "react";
 
 const FILLED: CSSProperties = {
   fontVariationSettings: '"FILL" 1, "wght" 500, "GRAD" 0, "opsz" 24',
@@ -133,6 +133,7 @@ export function TextField({
   autoFocus,
   onEnter,
   disabled,
+  quiet = false,
 }: {
   label?: string;
   value: string;
@@ -146,11 +147,19 @@ export function TextField({
   autoFocus?: boolean;
   onEnter?: () => void;
   disabled?: boolean;
+  /** Flat variant: a thin ring instead of the filled block, for a field that sits
+   *  inside a card and should not read as the loudest thing on the screen. */
+  quiet?: boolean;
 }) {
   const [focused, setFocused] = useState(false);
+  const id = useId();
   return (
-    <div className={`field ${focused ? "focused" : ""} ${error ? "error" : ""}`}>
-      {label ? <label>{label}</label> : null}
+    <div
+      className={`field ${quiet ? "quiet" : ""} ${focused ? "focused" : ""} ${
+        error ? "error" : ""
+      }`}
+    >
+      {label ? <label htmlFor={id}>{label}</label> : null}
       <div className="control">
         {icon ? (
           <span className="leading">
@@ -158,6 +167,10 @@ export function TextField({
           </span>
         ) : null}
         <input
+          id={id}
+          // A field with no label still needs a name for a screen reader; the
+          // placeholder is not one.
+          aria-label={label ?? placeholder}
           type={type}
           value={value}
           placeholder={placeholder}

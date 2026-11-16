@@ -43,10 +43,10 @@ const LRCLIB_SEARCH: &str = "https://lrclib.net/api/search";
 /// Minimum gap between lrclib requests, measured across every download at once.
 ///
 /// The API allows roughly 90 requests a minute for an identified client and asks
-/// for 200–500 ms between calls during batch work. Downloads run up to six at a
-/// time, so without a shared gate a playlist would burst straight into 429 and
-/// leave tracks without lyrics.
-const LRCLIB_INTERVAL: std::time::Duration = std::time::Duration::from_millis(700);
+/// for 200–500 ms between calls during batch work. The gap is deliberately wider
+/// than the minimum: a burst straight into 429 leaves tracks without lyrics, and a
+/// track with no lyrics is worse than a slightly slower pass.
+const LRCLIB_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1200);
 static LRCLIB_GATE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
 
 /// Waits until the next lrclib request is allowed, then claims the slot.
@@ -59,7 +59,11 @@ async fn lrclib_turn() {
         };
         let now = std::time::Instant::now();
         let wait = match *last {
-            Some(previous) => LRCLIB_INTERVAL.saturating_sub(now.duration_since(previous)),
+            // The gate can sit in the future when a 429 asked for a pause. The
+            // ordinary subtraction would return zero for a future instant and the
+            // retry would fire immediately, collect another 429 and give up.
+            Some(previous) if previous > now => previous.saturating_duration_since(now),
+            Some(previous) => LRCLIB_INTERVAL.saturating_sub(now.saturating_duration_since(previous)),
             None => std::time::Duration::ZERO,
         };
         *last = Some(now + wait);
@@ -164,30 +168,38 @@ async fn lrclib_json<T: serde::de::DeserializeOwned>(
     url: &str,
     query: &[(&str, String)],
 ) -> Option<T> {
-    lrclib_turn().await;
-    let response = http
-        .get(url)
-        .header(reqwest::header::USER_AGENT, LRCLIB_AGENT)
-        .query(query)
-        .send()
-        .await
-        .ok()?;
-    if let Some(wait) = retry_after(&response) {
-        crate::startup_log::write(&format!(
-            "lrclib просит подождать {} с — жду и не дёргаю дальше",
-            wait.as_secs()
-        ));
-        // The wait is claimed in the shared gate too, so parallel downloads back
-        // off together instead of each retrying on its own.
-        if let Ok(mut last) = LRCLIB_GATE.lock() {
-            *last = Some(std::time::Instant::now() + wait);
+    // One retry, after the wait the server asked for. Without it a single 429 in
+    // the middle of a big playlist silently dropped the lyrics for that track.
+    for attempt in 0..2 {
+        lrclib_turn().await;
+        let response = http
+            .get(url)
+            .header(reqwest::header::USER_AGENT, LRCLIB_AGENT)
+            .query(query)
+            .send()
+            .await
+            .ok()?;
+        if let Some(wait) = retry_after(&response) {
+            crate::startup_log::write(&format!(
+                "lrclib просит подождать {} с — жду и не дёргаю дальше",
+                wait.as_secs()
+            ));
+            // The wait is claimed in the shared gate too, so a batch backs off as
+            // one instead of every track retrying on its own.
+            if let Ok(mut last) = LRCLIB_GATE.lock() {
+                *last = Some(std::time::Instant::now() + wait);
+            }
+            if attempt == 0 {
+                continue;
+            }
+            return None;
         }
-        return None;
+        if !response.status().is_success() {
+            return None;
+        }
+        return response.json().await.ok();
     }
-    if !response.status().is_success() {
-        return None;
-    }
-    response.json().await.ok()
+    None
 }
 
 /// Exact lookup by metadata. lrclib answers 404 when it has nothing, which is a
@@ -366,9 +378,64 @@ pub async fn fetch(
     })
 }
 
+/// Yandex only — no network call to lrclib.
+///
+/// Used while tracks are downloading: the open database is asked once at the end
+/// for whatever Yandex could not provide, so a big playlist never turns into a
+/// burst of lrclib requests in the middle of the download.
+pub async fn yandex_only(
+    client: &Client,
+    track: &Track,
+    track_id: &str,
+    want_synced: bool,
+) -> Option<LyricsText> {
+    let found = yandex(client, track, track_id, want_synced).await?;
+    Some(if !want_synced && found.synced {
+        LyricsText {
+            text: strip_timings(&found.text),
+            synced: false,
+            source: found.source,
+        }
+    } else {
+        found
+    })
+}
+
+/// The open database only, for the pass that runs after the downloads finish.
+pub async fn from_open_database(
+    client: &Client,
+    track: &Track,
+    want_synced: bool,
+) -> Option<LyricsText> {
+    let found = lrclib(client.http(), track, want_synced).await?;
+    Some(if !want_synced && found.synced {
+        LyricsText {
+            text: strip_timings(&found.text),
+            synced: false,
+            source: found.source,
+        }
+    } else {
+        found
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gate can be pushed into the future by a `Retry-After`. Reading that as
+    /// "no wait needed" made the retry fire at once and collect a second 429.
+    #[test]
+    fn a_gate_in_the_future_still_waits() {
+        let now = std::time::Instant::now();
+        let previous = now + std::time::Duration::from_secs(5);
+        let wait = if previous > now {
+            previous.saturating_duration_since(now)
+        } else {
+            LRCLIB_INTERVAL.saturating_sub(now.saturating_duration_since(previous))
+        };
+        assert!(wait >= std::time::Duration::from_secs(4), "ожидание {wait:?} слишком короткое");
+    }
 
     #[test]
     fn detects_timestamps() {

@@ -1,19 +1,21 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp, type Page } from "./lib/store";
+import { useT } from "./lib/i18n";
 import { Icon, Button } from "./components/ui";
 import Wizard from "./pages/Wizard";
 import Home from "./pages/Home";
 import Downloads from "./pages/Downloads";
 import SettingsPage from "./pages/SettingsPage";
 
-const NAV: { key: Page; icon: string; label: string }[] = [
-  { key: "home", icon: "home", label: "Главная" },
-  { key: "downloads", icon: "download", label: "Загрузки" },
-  { key: "settings", icon: "settings", label: "Настройки" },
+const NAV: { key: Page; icon: string; labelKey: string }[] = [
+  { key: "home", icon: "home", labelKey: "nav.home" },
+  { key: "downloads", icon: "download", labelKey: "nav.downloads" },
+  { key: "settings", icon: "settings", labelKey: "nav.settings" },
 ];
 
 export default function App() {
+  const t = useT();
   const ready = useApp((state) => state.ready);
   const initError = useApp((state) => state.initError);
   const needsToken = useApp((state) => state.needsToken);
@@ -78,7 +80,7 @@ export default function App() {
       <div className="app-shell">
         <WindowTitlebar rail={false} />
         <div style={{ height: "100%", display: "grid", placeItems: "center" }}>
-          <span className="md-body muted">Запускаю ym-dl…</span>
+          <span className="md-body muted">{t("app.starting")}</span>
         </div>
       </div>
     );
@@ -92,14 +94,14 @@ export default function App() {
           <div style={{ maxWidth: 520, textAlign: "center" }}>
             <Icon name="error" size={40} />
             <div className="md-title" style={{ marginTop: 12 }}>
-              Не удалось прочитать настройки
+              {t("app.settingsError")}
             </div>
             <div className="md-body-sm muted" style={{ marginTop: 8 }}>
               {initError}
             </div>
             <div style={{ marginTop: 20 }}>
               <Button icon="refresh" onClick={() => init().catch(() => undefined)}>
-                Повторить
+                {t("app.retry")}
               </Button>
             </div>
           </div>
@@ -134,7 +136,7 @@ export default function App() {
               <Icon name={item.icon} filled={page === item.key} />
               {item.key === "downloads" && downloading ? <span className="rail-dot" /> : null}
             </span>
-            <span className="label">{item.label}</span>
+            <span className="label">{t(item.labelKey)}</span>
           </button>
         ))}
         <div className="rail-spacer" />
@@ -172,6 +174,7 @@ export default function App() {
 }
 
 function WindowTitlebar({ rail = true }: { rail?: boolean }) {
+  const t = useT();
   const win = getCurrentWindow();
   return (
     <div
@@ -192,13 +195,13 @@ function WindowTitlebar({ rail = true }: { rail?: boolean }) {
         ym-dl
       </span>
       <span className="spacer" data-tauri-drag-region />
-      <button type="button" className="window-button" aria-label="Свернуть" onClick={() => win.minimize()}>
+      <button type="button" className="window-button" aria-label={t("win.minimize")} onClick={() => win.minimize()}>
         <Icon name="remove" />
       </button>
       <button
         type="button"
         className="window-button"
-        aria-label="Развернуть"
+        aria-label={t("win.maximize")}
         onClick={() => win.toggleMaximize()}
       >
         <Icon name="expand_content" />
@@ -206,7 +209,7 @@ function WindowTitlebar({ rail = true }: { rail?: boolean }) {
       <button
         type="button"
         className="window-button close"
-        aria-label="Закрыть"
+        aria-label={t("win.close")}
         onClick={() => {
           // Autosave waits 400 ms; closing sooner would drop the last edit.
           void useApp.getState().flushSettings().finally(() => win.close());

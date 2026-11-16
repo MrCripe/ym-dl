@@ -36,9 +36,10 @@ pub struct Settings {
     pub tries: u32,
     pub retry_delay: u64,
     pub extract_flac: bool,
-    pub quarantine_lossy: bool,
     pub theme: String,
     pub accent: String,
+    /// Interface language: `auto` follows the system, otherwise `ru` or `en`.
+    pub language: String,
     pub check_updates: bool,
     pub last_url: String,
     pub concurrent: u8,
@@ -55,8 +56,8 @@ impl Default for Settings {
             embed_cover: true,
             cover_original: false,
             cover_resolution: 400,
-            lyrics_format: "lrc".into(),
-            lyrics_fallback: true,
+            lyrics_format: "none".into(),
+            lyrics_fallback: false,
             compatibility_level: 1,
             only_music: true,
             stick_to_artist: false,
@@ -66,9 +67,9 @@ impl Default for Settings {
             tries: 6,
             retry_delay: 5,
             extract_flac: true,
-            quarantine_lossy: false,
             theme: "system".into(),
             accent: "violet".into(),
+            language: "auto".into(),
             check_updates: true,
             last_url: String::new(),
             concurrent: 2,
@@ -82,7 +83,10 @@ impl Settings {
             self.quality = 2;
         }
         if !matches!(self.lyrics_format.as_str(), "none" | "text" | "lrc") {
-            self.lyrics_format = "lrc".into();
+            self.lyrics_format = "none".into();
+        }
+        if !matches!(self.language.as_str(), "auto" | "ru" | "en") {
+            self.language = "auto".into();
         }
         if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
             self.theme = "system".into();
@@ -119,37 +123,57 @@ pub fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Where downloads go when the user has not chosen a folder.
+/// Where downloads go when the user has not chosen a folder: the system's music
+/// folder, on both Windows and Linux.
 ///
-/// Next to the executable is the portable choice and the only one that works
-/// when the profile is locked down; the standard `~/Music/ym-dl` is used only if
-/// the exe folder turns out to be read-only (an installed build in Program Files).
+/// If that folder cannot be written to (a locked-down profile), the portable
+/// folder next to the executable is used instead, so a download never fails just
+/// because the default was unreachable.
 pub fn default_download_dir() -> PathBuf {
+    // `audio_dir` honours XDG_MUSIC_DIR on Linux and the shell's Music folder on
+    // Windows; `home_dir()/Music` would create a second folder on a system that
+    // moved it.
+    let music = directories::UserDirs::new()
+        .and_then(|dirs| dirs.audio_dir().map(Path::to_path_buf))
+        .unwrap_or_else(|| home_dir().join("Music"));
+    if dir_writable(&music) {
+        return music;
+    }
     if let Some(dir) = exe_dir() {
         let candidate = dir.join("Music");
         if dir_writable(&candidate) {
             return candidate;
         }
     }
-    home_dir().join("Music").join("ym-dl")
+    music
 }
 
-/// The folder name an earlier build used as its fallback. Kept only so an
-/// existing library can be picked up instead of looking like it vanished.
-const LEGACY_DOWNLOAD_DIR: &str = "lmao";
-
-/// Adopts the library a previous build wrote to `~/Music/lmao`.
+/// Folders an earlier build used as its default download location.
 ///
-/// Returns the folder when it exists and the new default does not, so the first
-/// launch after the rename finds the old music instead of an empty folder. The
-/// files are not moved: `~/Music/lmao` may hold a large library, and a silent
-/// copy of several gigabytes is not something to do on startup.
-pub fn legacy_download_dir() -> Option<PathBuf> {
-    let legacy = home_dir().join("Music").join(LEGACY_DOWNLOAD_DIR);
-    if legacy.is_dir() {
-        Some(legacy)
-    } else {
-        None
+/// The default moved twice: `~/Music/lmao`, then `~/Music/ym-dl`, then `~/Music`.
+/// A user who updates keeps an empty setting, so without this the app would start
+/// writing to a new folder and `skip-existing` would no longer see the library
+/// that is already on disk.
+const LEGACY_DOWNLOAD_DIRS: [&str; 2] = ["ym-dl", "lmao"];
+
+/// Points an untouched setting at the library an earlier build created.
+fn adopt_legacy_download_dir(settings: &mut Settings) {
+    if !settings.download_dir.trim().is_empty() {
+        return;
+    }
+    for name in LEGACY_DOWNLOAD_DIRS {
+        let legacy = home_dir().join("Music").join(name);
+        if legacy.is_dir() {
+            settings.download_dir = legacy.display().to_string();
+            return;
+        }
+    }
+    // A portable build used to download next to the executable.
+    if let Some(dir) = exe_dir() {
+        let legacy = dir.join("Music");
+        if legacy.is_dir() && legacy != home_dir().join("Music") {
+            settings.download_dir = legacy.display().to_string();
+        }
     }
 }
 
@@ -245,13 +269,9 @@ pub fn adopt_previous_data_dir() {
     if fs::copy(&source, &target).is_err() {
         return;
     }
-    for name in ["token"] {
-        let from = previous.join(name);
-        let to = current.join(name);
-        if from.is_file() && !to.is_file() {
-            let _ = fs::copy(&from, &to);
-        }
-    }
+    // The token is not copied: it lives in the system credential store, which does
+    // not move with the folder. Copying the old plaintext file would put the secret
+    // back on disk for no reason.
     crate::startup_log::write(&format!(
         "данные перенесены из {} в {}",
         previous.display(),
@@ -291,20 +311,6 @@ pub fn load_settings() -> Settings {
     settings.sanitize();
     adopt_legacy_download_dir(&mut settings);
     settings
-}
-
-/// Points an untouched setting at the library an earlier build created in
-/// `~/Music/lmao`, so renaming the default does not make a downloaded collection
-/// look like it vanished. An explicitly chosen folder is never overridden.
-fn adopt_legacy_download_dir(settings: &mut Settings) {
-    if !settings.download_dir.trim().is_empty() {
-        return;
-    }
-    let Some(legacy) = legacy_download_dir() else { return };
-    if default_download_dir().is_dir() {
-        return;
-    }
-    settings.download_dir = legacy.display().to_string();
 }
 
 pub fn save_settings(settings: &Settings) -> Result<()> {
@@ -353,6 +359,21 @@ fn keyring_clear() {
     if let Some(entry) = keyring_entry() {
         let _ = entry.delete_credential();
     }
+}
+
+/// Human-readable description of where the token is kept, for the settings screen.
+///
+/// Saying "credential store" while showing a file path was a contradiction: the
+/// file only exists on a system without a store.
+pub fn token_store_label() -> String {
+    if keyring_read().is_some() {
+        return format!("{KEYRING_SERVICE} / {KEYRING_ACCOUNT}");
+    }
+    let path = token_path();
+    if path.is_file() {
+        return path.display().to_string();
+    }
+    format!("{KEYRING_SERVICE} / {KEYRING_ACCOUNT}")
 }
 
 pub fn read_token() -> String {
@@ -448,15 +469,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_explicit_download_dir_is_never_replaced() {
-        // The rename of the default folder must not move a library the user chose
-        // themselves, so an explicit path survives untouched.
+    fn lyrics_are_off_until_asked_for() {
+        // Lyrics are an opt-in extra: the default download must not touch them.
+        assert_eq!(Settings::default().lyrics_format, "none");
+        assert!(!Settings::default().lyrics_fallback);
+    }
+
+    #[test]
+    fn an_unknown_language_falls_back_to_auto() {
         let mut settings = Settings {
-            download_dir: "D:/Music/mine".into(),
+            language: "klingon".into(),
             ..Settings::default()
         };
-        adopt_legacy_download_dir(&mut settings);
-        assert_eq!(settings.download_dir, "D:/Music/mine");
+        settings.sanitize();
+        assert_eq!(settings.language, "auto");
     }
 
     #[test]
@@ -476,7 +502,7 @@ mod tests {
         };
         settings.sanitize();
         assert_eq!(settings.quality, 2);
-        assert_eq!(settings.lyrics_format, "lrc");
+        assert_eq!(settings.lyrics_format, "none");
         assert_eq!(settings.theme, "system");
         assert_eq!(settings.timeout, 1);
         assert_eq!(settings.cover_resolution, 100);
@@ -489,18 +515,37 @@ mod tests {
     }
 
     #[test]
-    fn default_target_dir_is_writable_and_not_the_profile() {
-        // Portable build: downloads go next to the exe, which is the one place
-        // that works when the user profile refuses writes.
+    fn default_target_dir_is_writable_and_the_music_folder() {
         let mut settings = Settings::default();
         settings.download_dir.clear();
         let dir = settings.target_dir();
         assert!(dir_writable(&dir), "default download dir must accept writes: {}", dir.display());
-        assert!(
-            dir.ends_with("Music") || dir.ends_with("Music/ym-dl") || dir.ends_with("Music\\ym-dl"),
-            "unexpected default: {}",
-            dir.display()
-        );
+
+        // The default must be the music folder itself, never a subfolder of it:
+        // an earlier build wrote into `~/Music/ym-dl` and then `~/Music/lmao`, and
+        // the difference matters because the FLAC sweep walks the whole folder.
+        let name = dir.file_name().map(|value| value.to_string_lossy().to_string());
+        assert_eq!(name.as_deref(), Some("Music"), "unexpected default: {}", dir.display());
+
+        let music = directories::UserDirs::new()
+            .and_then(|dirs| dirs.audio_dir().map(Path::to_path_buf))
+            .unwrap_or_else(|| home_dir().join("Music"));
+        if dir_writable(&music) {
+            assert_eq!(dir, music, "по умолчанию должна быть сама папка музыки");
+        }
+        // A locked-down profile falls back to the folder next to the executable;
+        // the writability assertion above is what covers that case.
+    }
+
+    #[test]
+    fn an_explicit_folder_is_never_replaced() {
+        // The migration of old defaults must not move a library the user chose.
+        let mut settings = Settings {
+            download_dir: "D:/Music/mine".into(),
+            ..Settings::default()
+        };
+        adopt_legacy_download_dir(&mut settings);
+        assert_eq!(settings.download_dir, "D:/Music/mine");
     }
 
     #[test]

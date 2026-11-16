@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useApp } from "../lib/store";
+import { useT, useLang } from "../lib/i18n";
 import type { TrackState } from "../lib/api";
 import { Badge, Button, Icon, Progress } from "../components/ui";
 
@@ -12,18 +13,10 @@ const STATUS_ICON: Record<TrackState["status"], { icon: string; spin?: boolean }
   cancelled: { icon: "block" },
 };
 
-const STATUS_LABEL: Record<TrackState["status"], string> = {
-  pending: "в очереди",
-  downloading: "качается",
-  ok: "готово",
-  failed: "ошибка",
-  skipped: "пропущен",
-  cancelled: "остановлен",
-};
-
-function formatBytes(value: number): string {
+function formatBytes(value: number, lang: "ru" | "en"): string {
   if (!value) return "";
-  const units = ["Б", "КиБ", "МиБ", "ГиБ"];
+  const units =
+    lang === "en" ? ["B", "KiB", "MiB", "GiB"] : ["Б", "КиБ", "МиБ", "ГиБ"];
   let size = value;
   let unit = 0;
   while (size >= 1024 && unit < units.length - 1) {
@@ -34,12 +27,16 @@ function formatBytes(value: number): string {
 }
 
 export default function Downloads() {
+  const t = useT();
+  const lang = useLang();
   const tracks = useApp((state) => state.tracks);
   const progress = useApp((state) => state.progress);
   const logs = useApp((state) => state.logs);
   const downloading = useApp((state) => state.downloading);
   const stop = useApp((state) => state.stop);
   const setPage = useApp((state) => state.setPage);
+  const openFolder = useApp((state) => state.openFolder);
+  const toast = useApp((state) => state.toast);
   const logRef = useRef<HTMLDivElement>(null);
 
   const visible = useMemo(() => tracks.filter(Boolean), [tracks]);
@@ -49,22 +46,35 @@ export default function Downloads() {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
   }, [logs.length]);
 
+  const folderButton = (
+    <Button
+      variant="tonal"
+      icon="folder_open"
+      onClick={() => {
+        void openFolder().catch((error) => toast(String((error as Error).message), "error"));
+      }}
+    >
+      {t("dl.openFolder")}
+    </Button>
+  );
+
   if (!visible.length && !downloading) {
     return (
       <div className="page">
         <div className="page-narrow">
           <div className="page-header">
             <div>
-              <h1>Загрузки</h1>
-              <p>Здесь появится очередь и прогресс</p>
+              <h1>{t("dl.title")}</h1>
+              <p>{t("dl.subtitle")}</p>
             </div>
+            {folderButton}
           </div>
           <div className="empty-state">
             <Icon name="download" />
-            <div className="md-title">Загрузок пока не было</div>
-            <div className="md-body-sm">Выберите треки на главной и нажмите «Начать».</div>
+            <div className="md-title">{t("dl.emptyTitle")}</div>
+            <div className="md-body-sm">{t("dl.emptyBody")}</div>
             <Button variant="tonal" icon="home" onClick={() => setPage("home")}>
-              На главную
+              {t("dl.toHome")}
             </Button>
           </div>
         </div>
@@ -77,28 +87,38 @@ export default function Downloads() {
       <div className="page-narrow">
         <div className="page-header">
           <div>
-            <h1>Загрузки</h1>
+            <h1>{t("dl.title")}</h1>
             <p>
               {progress
-                ? `${progress.done} из ${progress.total} обработано`
-                : "Подготовка очереди…"}
+                ? `${progress.done} / ${progress.total} ${t("dl.processed")}`
+                : t("dl.preparing")}
             </p>
           </div>
-          {downloading ? (
-            <Button variant="danger-tonal" icon="stop_circle" onClick={stop}>
-              Остановить
-            </Button>
-          ) : (
-            <Button variant="tonal" icon="home" onClick={() => setPage("home")}>
-              На главную
-            </Button>
-          )}
+          <div className="row">
+            {folderButton}
+            {downloading ? (
+              <Button variant="danger-tonal" icon="stop_circle" onClick={stop}>
+                {t("dl.stop")}
+              </Button>
+            ) : (
+              <Button variant="tonal" icon="home" onClick={() => setPage("home")}>
+                {t("dl.toHome")}
+              </Button>
+            )}
+          </div>
         </div>
 
         <div className="job-header animate-in">
           <div className="job-ring">
             <svg width="72" height="72" viewBox="0 0 72 72">
-              <circle cx="36" cy="36" r="30" fill="none" stroke="var(--surface-highest)" strokeWidth="6" />
+              <circle
+                cx="36"
+                cy="36"
+                r="30"
+                fill="none"
+                stroke="var(--surface-highest)"
+                strokeWidth="6"
+              />
               <circle
                 cx="36"
                 cy="36"
@@ -116,47 +136,59 @@ export default function Downloads() {
           </div>
           <div className="job-stats grow">
             <div className="job-stat">
-              <span className="num count-pop" key={`ok-${progress?.ok ?? 0}`} style={{ color: "var(--success)" }}>
+              <span
+                className="num count-pop"
+                key={`ok-${progress?.ok ?? 0}`}
+                style={{ color: "var(--success)" }}
+              >
                 {progress?.ok ?? 0}
               </span>
-              <span className="cap">скачано</span>
+              <span className="cap">{t("dl.done")}</span>
             </div>
             <div className="job-stat">
-              <span className="num count-pop" key={`skip-${progress?.skipped ?? 0}`} style={{ color: "var(--warning)" }}>
+              <span
+                className="num count-pop"
+                key={`skip-${progress?.skipped ?? 0}`}
+                style={{ color: "var(--warning)" }}
+              >
                 {progress?.skipped ?? 0}
               </span>
-              <span className="cap">пропущено</span>
+              <span className="cap">{t("dl.skipped")}</span>
             </div>
             <div className="job-stat">
-              <span className="num count-pop" key={`fail-${progress?.failed ?? 0}`} style={{ color: "var(--error)" }}>
+              <span
+                className="num count-pop"
+                key={`fail-${progress?.failed ?? 0}`}
+                style={{ color: "var(--error)" }}
+              >
                 {progress?.failed ?? 0}
               </span>
-              <span className="cap">ошибок</span>
+              <span className="cap">{t("dl.failed")}</span>
             </div>
             <div className="job-stat">
               <span className="num">{progress?.total ?? visible.length}</span>
-              <span className="cap">всего</span>
+              <span className="cap">{t("dl.total")}</span>
             </div>
           </div>
           {downloading ? (
             <Badge tone="primary" icon="bolt">
-              {progress?.stopping ? "останавливаюсь" : "работаю"}
+              {progress?.stopping ? t("dl.stopping") : t("dl.working")}
             </Badge>
           ) : progress?.error ? (
             <Badge tone="error" icon="error">
-              прервано
+              {t("dl.interrupted")}
             </Badge>
           ) : progress?.cancelled ? (
             <Badge tone="warning" icon="block">
-              остановлено
+              {t("dl.stopped")}
             </Badge>
           ) : (progress?.failed ?? 0) > 0 ? (
             <Badge tone="error" icon="error">
-              с ошибками
+              {t("dl.withErrors")}
             </Badge>
           ) : (
             <Badge tone="success" icon="task_alt">
-              завершено
+              {t("dl.finished")}
             </Badge>
           )}
         </div>
@@ -175,7 +207,11 @@ export default function Downloads() {
             return (
               <div key={`${track.id}-${track.index}`} className={`download-row ${track.status}`}>
                 <span className="state-icon">
-                  <Icon name={state.icon} className={state.spin ? "spin" : ""} filled={track.status === "ok"} />
+                  <Icon
+                    name={state.icon}
+                    className={state.spin ? "spin" : ""}
+                    filled={track.status === "ok"}
+                  />
                 </span>
                 <div className="grow stack" style={{ minWidth: 0 }}>
                   <span className="truncate md-body">{track.title || track.id}</span>
@@ -183,7 +219,7 @@ export default function Downloads() {
                     {track.artist}
                     {track.message ? ` · ${track.message}` : ""}
                     {track.status === "downloading" && track.totalBytes > 0
-                      ? ` · ${formatBytes(track.doneBytes)} из ${formatBytes(track.totalBytes)}`
+                      ? ` · ${formatBytes(track.doneBytes, lang)} / ${formatBytes(track.totalBytes, lang)}`
                       : ""}
                   </span>
                   {track.status === "downloading" ? (
@@ -192,7 +228,7 @@ export default function Downloads() {
                     </div>
                   ) : null}
                 </div>
-                <span className="md-body-sm muted">{STATUS_LABEL[track.status]}</span>
+                <span className="md-body-sm muted">{t(`dl.status.${track.status}`)}</span>
               </div>
             );
           })}
@@ -203,7 +239,7 @@ export default function Downloads() {
             {logs.map((line, index) => (
               <div key={index} className={`log-line ${line.level}`}>
                 <span className="time">
-                  {new Date(line.time).toLocaleTimeString("ru-RU", { hour12: false })}
+                  {new Date(line.time).toLocaleTimeString(undefined, { hour12: false })}
                 </span>
                 <span>{line.message}</span>
               </div>

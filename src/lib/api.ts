@@ -21,9 +21,9 @@ export type Settings = {
   tries: number;
   retryDelay: number;
   extractFlac: boolean;
-  quarantineLossy: boolean;
   theme: "system" | "light" | "dark";
   accent: string;
+  language: "auto" | "ru" | "en";
   checkUpdates: boolean;
   lastUrl: string;
   concurrent: number;
@@ -94,6 +94,7 @@ export type JobProgress = {
 export type JobLog = { level: "info" | "ok" | "warn" | "error"; message: string };
 
 export type UpdateEntry = {
+  kind: "app" | "ffmpeg";
   name: string;
   installed: string;
   latest: string;
@@ -108,11 +109,11 @@ export type EnvironmentInfo = {
   ffmpegPath: string;
   appVersion: string;
   configPath: string;
-  tokenPath: string;
+  tokenStore: string;
   os: string;
 };
 
-export type PostProcessStats = { converted: number; quarantined: number; failed: number };
+export type PostProcessStats = { converted: number; failed: number };
 
 const call = <T>(command: string, args?: Record<string, unknown>) =>
   invoke<T>(command, args).catch((error) => {
@@ -134,6 +135,7 @@ export const api = {
   updates: () => call<UpdateEntry[]>("check_updates"),
   environment: () => call<EnvironmentInfo>("environment"),
   postProcess: () => call<PostProcessStats>("post_process"),
+  openDownloadDir: () => call<void>("open_download_dir"),
   probeLossless: () => call<AccountInfo>("probe_lossless"),
 };
 

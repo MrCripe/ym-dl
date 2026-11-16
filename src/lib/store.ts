@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { api, subscribe, type AccountInfo, type JobProgress, type Settings, type SourceInfo, type TrackState } from "./api";
 import { findUpdate } from "./update";
+import { resolveLang, translate } from "./i18n";
 
 export type Page = "home" | "downloads" | "settings";
 export type Toast = { id: number; text: string; tone: "info" | "error" | "success"; action?: string; page?: Page };
@@ -41,6 +42,7 @@ type State = {
   setAllTracks: (value: boolean) => void;
   start: () => Promise<void>;
   stop: () => Promise<void>;
+  openFolder: () => Promise<void>;
   resetToken: () => Promise<void>;
   toast: (text: string, tone?: Toast["tone"], action?: string, page?: Page) => void;
   dismissToast: (id: number) => void;
@@ -48,6 +50,16 @@ type State = {
 
 let toastId = 0;
 let saveTimer = 0;
+
+/**
+ * Translation for code that runs outside a component.
+ *
+ * The store raises toasts from event handlers and timers, where a hook cannot be
+ * used; it reads the current language from its own state instead.
+ */
+function tr(lang: string | undefined, key: string, vars?: Record<string, string | number>) {
+  return translate(resolveLang(lang), key, vars);
+}
 
 export const useApp = create<State>((set, get) => ({
   ready: false,
@@ -86,14 +98,19 @@ export const useApp = create<State>((set, get) => ({
         })),
       onFinished: (progress) => {
         set({ progress, downloading: false });
+        const lang = get().settings?.language;
         get().toast(
           progress.error
-            ? "Загрузка прервана — причина в логе"
+            ? tr(lang, "toast.interrupted")
             : progress.cancelled
-              ? "Загрузка остановлена"
-              : `Готово: ${progress.ok} скачано, ${progress.skipped} пропущено, ${progress.failed} с ошибкой`,
+              ? tr(lang, "toast.stopped")
+              : tr(lang, "toast.finished", {
+                  ok: progress.ok,
+                  skipped: progress.skipped,
+                  failed: progress.failed,
+                }),
           progress.error || progress.failed > 0 ? "error" : progress.cancelled ? "info" : "success",
-          "Загрузки",
+          tr(lang, "nav.downloads"),
           "downloads",
         );
       },
@@ -141,10 +158,11 @@ export const useApp = create<State>((set, get) => ({
       findUpdate()
         .then((update) => {
           if (update) {
+            const lang = get().settings?.language;
             get().toast(
-              `Доступно обновление ${update.version} — установить можно в настройках`,
+              tr(lang, "toast.updateAvailable", { version: update.version }),
               "info",
-              "Настройки",
+              tr(lang, "nav.settings"),
               "settings",
             );
           }
@@ -283,10 +301,14 @@ export const useApp = create<State>((set, get) => ({
     if (!accepted) {
       // Nothing was running: saying "stopping" would be a lie.
       set({ downloading: false });
-      get().toast("Загрузка уже не идёт", "info");
+      get().toast(tr(get().settings?.language, "toast.alreadyStopped"), "info");
       return;
     }
-    get().toast("Останавливаю после текущего трека…");
+    get().toast(tr(get().settings?.language, "toast.stopping"));
+  },
+
+  openFolder: async () => {
+    await api.openDownloadDir();
   },
 
   resetToken: async () => {
@@ -304,7 +326,7 @@ export const useApp = create<State>((set, get) => ({
       tracks: [],
       logs: [],
     });
-    get().toast("Токен удалён — введите новый", "success");
+    get().toast(tr(get().settings?.language, "toast.tokenCleared"), "success");
   },
 
   toast: (text, tone = "info", action, page) => {

@@ -8,6 +8,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Folder name an older build moved replaced `.m4a` files into. Only skipped, so
+/// those backups are never converted or deleted.
 pub const BACKUP_DIR: &str = "_old_m4a";
 
 #[cfg(windows)]
@@ -111,10 +113,12 @@ pub fn extract_flac(source: &Path) -> String {
             && part.is_file()
             && part.metadata().map(|meta| meta.len() > 0).unwrap_or(false)
             && codec_of(&part) == "flac";
-        if ok {
-            if std::fs::rename(&part, &target).is_ok() {
-                return "converted".into();
-            }
+        // A file that only looks like FLAC is not enough: the source is deleted
+        // right after a successful conversion, so the result has to decode end to
+        // end first. A remux that produced a truncated file must not cost the user
+        // their only copy of the track.
+        if ok && decodes(&part) && std::fs::rename(&part, &target).is_ok() {
+            return "converted".into();
         }
         let _ = std::fs::remove_file(&part);
     }
@@ -142,55 +146,50 @@ pub fn codec_of(path: &Path) -> String {
     }
 }
 
-/// Moves a file into the `_old_m4a` backup folder inside `root`.
-pub fn quarantine(path: &Path, root: &Path) -> bool {
-    let backup = root.join(BACKUP_DIR);
-    if std::fs::create_dir_all(&backup).is_err() {
-        return false;
-    }
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|value| value.subsec_nanos())
-        .unwrap_or(0);
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| "file".into());
-    std::fs::rename(path, backup.join(format!("{stamp:08x}-{name}"))).is_ok()
+/// Removes the `.m4a` that a FLAC was extracted from.
+///
+/// The extracted `.flac` holds the same audio, so keeping both just doubles the
+/// library size. Called only after the conversion succeeded and the result was
+/// decoded end to end.
+pub fn drop_source(path: &Path) -> bool {
+    std::fs::remove_file(path).is_ok()
 }
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostProcessStats {
     pub converted: usize,
-    pub quarantined: usize,
     pub failed: usize,
 }
 
-/// Walks `root` once: extracts FLAC from `.m4a` files and optionally moves
-/// lossy leftovers aside so `skip-existing` does not lock them in.
-pub fn post_process(root: &Path, quarantine_lossy: bool) -> PostProcessStats {
+/// Walks `root` once and extracts FLAC from every `.m4a` that holds one.
+pub fn post_process(root: &Path) -> PostProcessStats {
     let mut stats = PostProcessStats::default();
     if !root.is_dir() {
         return stats;
     }
-    let backup = root.join(BACKUP_DIR);
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                if path != backup {
-                    stack.push(path);
+                // An older build kept the replaced `.m4a` here. Walking into it
+                // would convert and then delete those backups as if they were
+                // leftovers.
+                if path.file_name().map(|name| name == BACKUP_DIR).unwrap_or(false) {
+                    continue;
                 }
+                stack.push(path);
                 continue;
             }
             let extension = path
                 .extension()
                 .map(|value| value.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
-            if !matches!(extension.as_str(), "m4a" | "mp3" | "flac") {
+            // Only `.m4a` can hide a FLAC stream; `.mp3` and `.flac` are already
+            // in their final form.
+            if extension != "m4a" {
                 continue;
             }
             // An interrupted download leaves `.name.part.m4a` behind. It carries
@@ -203,20 +202,18 @@ pub fn post_process(root: &Path, quarantine_lossy: bool) -> PostProcessStats {
             if is_partial {
                 continue;
             }
-            let codec = codec_of(&path);
-            if extension == "m4a" && codec == "flac" {
-                match extract_flac(&path).as_str() {
-                    "converted" => {
-                        stats.converted += 1;
-                        quarantine(&path, root);
-                    }
-                    "exists" => {
-                        quarantine(&path, root);
-                    }
-                    _ => stats.failed += 1,
+            if codec_of(&path) != "flac" {
+                continue;
+            }
+            match extract_flac(&path).as_str() {
+                "converted" => {
+                    stats.converted += 1;
+                    drop_source(&path);
                 }
-            } else if quarantine_lossy && matches!(codec.as_str(), "aac" | "mp3") && quarantine(&path, root) {
-                stats.quarantined += 1;
+                "exists" => {
+                    drop_source(&path);
+                }
+                _ => stats.failed += 1,
             }
         }
     }
@@ -233,19 +230,18 @@ mod tests {
     }
 
     #[test]
-    fn quarantine_moves_file_into_backup_folder() {
-        // `target` is writable wherever the tests can run at all; `temp_dir()`
-        // is not, on a machine with a redirected or locked-down %TEMP%.
+    fn the_source_m4a_is_removed_after_extraction() {
+        // Keeping both `.m4a` and `.flac` doubles the library for no gain, so the
+        // source is deleted once the conversion has produced the FLAC.
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("target")
-            .join(format!("ymdl-quarantine-{}", std::process::id()));
+            .join(format!("ymdl-drop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let source = root.join("track.m4a");
         std::fs::write(&source, b"data").unwrap();
-        assert!(quarantine(&source, &root));
+        assert!(drop_source(&source));
         assert!(!source.exists());
-        assert!(root.join(BACKUP_DIR).read_dir().unwrap().next().is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -18,7 +18,7 @@ pub async fn run_live_check(track_id: &str, quality: u8) -> LiveReport {
     let mut lines = Vec::new();
     let token = config::read_token();
     if token.is_empty() {
-        lines.push("токен не найден в ~/.ym-dl-token".to_string());
+        lines.push("токен не найден: ни в системном хранилище, ни в файле".to_string());
         return LiveReport { ok: false, lines };
     }
     lines.push(format!("токен: {} символов", token.len()));

@@ -178,6 +178,7 @@ pub fn run() {
             commands::check_updates,
             commands::environment,
             commands::post_process,
+            commands::open_download_dir,
             commands::probe_lossless,
         ])
         .run(tauri::generate_context!())

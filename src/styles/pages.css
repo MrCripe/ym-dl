@@ -154,6 +154,31 @@
   animation: pop-in var(--dur-short4) var(--ease-emphasized) both;
 }
 
+/* The "why there is no FLAC" block: a calm explanation, not an error, because
+   nothing is broken and nothing needs fixing on the user's side. */
+.wizard-explain {
+  margin-top: 4px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  background: var(--surface-low);
+  border-left: 3px solid var(--warning);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wizard-explain-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.wizard-explain p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--on-surface-variant);
+}
+
 /* --- home ------------------------------------------------------------- */
 
 .source-card {
@@ -272,8 +297,10 @@
 }
 
 .empty-state .material-symbols-rounded {
-  font-size: 44px;
-  opacity: 0.5;
+  /* 44px dominated an otherwise empty screen; the icon is a hint, not the
+     content. */
+  font-size: 30px;
+  opacity: 0.45;
 }
 
 .skeleton-row {
@@ -603,9 +630,107 @@
   user-select: text;
 }
 
-.pattern-preview {
+
+/* --- file layout presets ---------------------------------------------- */
+
+.layout-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px 16px;
+}
+
+.layout-intro {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--on-surface-variant);
+}
+
+.layout-option {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-short2) var(--ease-standard),
+    background-color var(--dur-short2) var(--ease-standard);
+}
+
+.layout-option:hover {
+  border-color: var(--outline);
+  background: color-mix(in srgb, var(--on-surface) 4%, transparent);
+}
+
+.layout-option.active {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+
+.layout-option:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.layout-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.layout-name {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.layout-hint {
   font-size: 12px;
   color: var(--on-surface-variant);
-  padding: 6px 4px 0;
+}
+
+/* The example is the point of the row: a template alone does not say what the
+   folder will look like. */
+.layout-example {
+  flex: 0 1 auto;
+  max-width: 55%;
+  font-family: "Roboto Mono", ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--on-surface-variant);
+  background: var(--surface-low);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
   overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.layout-option.custom {
+  cursor: default;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+/* Own class, not `.control`: that name is also used inside `.field`, and matching
+   both stretched the inner input to the height of the whole row. */
+.layout-input {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.layout-input .field .control {
+  height: 44px;
+}
+
+.setting-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 14px;
 }

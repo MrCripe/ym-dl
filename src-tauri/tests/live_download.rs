@@ -15,7 +15,7 @@
 use ym_dl_lib::live::run_live_check;
 
 #[tokio::test]
-#[ignore = "needs a real token in ~/.ym-dl-token and network access"]
+#[ignore = "needs a real token in the credential store and network access"]
 async fn downloads_a_real_track_end_to_end() {
     let report = run_live_check("53404", 2).await;
     for line in &report.lines {
@@ -26,7 +26,7 @@ async fn downloads_a_real_track_end_to_end() {
 
 /// A track Yandex has synced lyrics for, which is what the LRC option is for.
 #[tokio::test]
-#[ignore = "needs a real token in ~/.ym-dl-token and network access"]
+#[ignore = "needs a real token in the credential store and network access"]
 async fn a_track_with_lyrics_gets_its_timings() {
     let report = run_live_check("114784199", 2).await;
     for line in &report.lines {
@@ -48,7 +48,7 @@ async fn a_track_with_lyrics_gets_its_timings() {
 
 /// Yandex has no text for this track, so the lrclib fallback is what supplies it.
 #[tokio::test]
-#[ignore = "needs a real token in ~/.ym-dl-token and network access"]
+#[ignore = "needs a real token in the credential store and network access"]
 async fn the_lrclib_fallback_covers_a_track_yandex_lacks() {
     let report = run_live_check("96109", 2).await;
     for line in &report.lines {

@@ -4,18 +4,67 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, type EnvironmentInfo, type UpdateEntry } from "../lib/api";
 import { findUpdate, installUpdate, type AvailableUpdate } from "../lib/update";
 import { useApp } from "../lib/store";
+import { useT, useLang } from "../lib/i18n";
 import { Badge, Button, Icon, Segmented, Slider, Switch, TextField } from "../components/ui";
 
-const ACCENTS: { value: string; label: string; color: string }[] = [
-  { value: "violet", label: "Фиолетовый", color: "#6750a4" },
-  { value: "blue", label: "Синий", color: "#0061a4" },
-  { value: "green", label: "Зелёный", color: "#006c4c" },
-  { value: "teal", label: "Бирюзовый", color: "#00696e" },
-  { value: "orange", label: "Оранжевый", color: "#8b5000" },
-  { value: "pink", label: "Розовый", color: "#a4306b" },
+const ACCENTS: { value: string; key: string; color: string }[] = [
+  { value: "violet", key: "set.violet", color: "#6750a4" },
+  { value: "blue", key: "set.blue", color: "#0061a4" },
+  { value: "green", key: "set.green", color: "#006c4c" },
+  { value: "teal", key: "set.teal", color: "#00696e" },
+  { value: "orange", key: "set.orange", color: "#8b5000" },
+  { value: "pink", key: "set.pink", color: "#a4306b" },
+];
+
+/**
+ * Ready-made file layouts, in the order a person is likely to want them: liked
+ * tracks first, then singles, then albums, then the sorting variants.
+ *
+ * `example` is what the user actually sees: a template alone says nothing about
+ * the folder that comes out of it.
+ */
+const LAYOUTS: { key: string; hint: string; pattern: string; example: string }[] = [
+  {
+    key: "layout.likes",
+    hint: "layout.likesHint",
+    pattern: "#title",
+    example: "Smells Like Teen Spirit.flac",
+  },
+  {
+    key: "layout.single",
+    hint: "layout.singleHint",
+    pattern: "#track-artist - #title",
+    example: "Nirvana - Smells Like Teen Spirit.flac",
+  },
+  {
+    key: "layout.album",
+    hint: "layout.albumHint",
+    pattern: "#album-artist/#album/#number-padded #title",
+    example: "Nirvana/Nevermind/05 Smells Like Teen Spirit.flac",
+  },
+  {
+    key: "layout.artist",
+    hint: "layout.artistHint",
+    pattern: "#track-artist/#album/#number-padded #title",
+    example: "Nirvana/Nevermind/05 Smells Like Teen Spirit.flac",
+  },
+  {
+    key: "layout.year",
+    hint: "layout.yearHint",
+    pattern: "#album-artist/#year - #album/#number-padded #title",
+    example: "Nirvana/1991 - Nevermind/05 Smells Like Teen Spirit.flac",
+  },
+  {
+    key: "layout.flat",
+    hint: "layout.flatHint",
+    pattern: "#number-padded #title",
+    example: "05 Smells Like Teen Spirit.flac",
+  },
 ];
 
 export default function SettingsPage() {
+  const t = useT();
+  const lang = useLang();
   const draft = useApp((state) => state.settingsDraft);
   const dirty = useApp((state) => state.settingsDirty);
   const patch = useApp((state) => state.patchSettings);
@@ -43,15 +92,15 @@ export default function SettingsPage() {
       const available = await findUpdate();
       setPending(available);
       if (available) {
-        toast(`Доступна версия ${available.version}`, "info");
+        toast(t("set.updateFound", { version: available.version }), "info");
       } else {
-        toast("Установлена последняя версия", "success");
+        toast(t("set.upToDate"), "success");
       }
     } catch (error) {
       // "Nothing to install" and "the check failed" are different answers; the
       // second one must not be shown as a green "you are up to date".
       setPending(null);
-      toast(`Не удалось проверить обновления: ${(error as Error).message}`, "error");
+      toast(t("set.updateFailed", { error: (error as Error).message }), "error");
     } finally {
       setChecking(false);
     }
@@ -70,77 +119,68 @@ export default function SettingsPage() {
         }
       });
       // installUpdate restarts the app; reaching here means it did not.
-      toast("Обновление установлено — перезапускаю", "success");
+      toast(t("set.updateInstalled"), "success");
     } catch (error) {
       setInstalling(null);
-      toast(`Обновление не установилось: ${(error as Error).message}`, "error");
+      toast(t("set.updateError", { error: (error as Error).message }), "error");
     }
   };
 
   if (!draft) return null;
+
+  const activeLayout =
+    LAYOUTS.find((layout) => layout.pattern === draft.pathPattern)?.key ?? "custom";
 
   return (
     <div className="page">
       <div className="page-narrow settings-page">
         <div className="page-header">
           <div>
-            <h1>Настройки</h1>
-            <p>Всё, что влияет на загрузку, теги и внешний вид</p>
+            <h1>{t("set.title")}</h1>
           </div>
           <div className="row">
             {dirty ? (
               <Badge tone="warning" icon="refresh">
-                сохраняю…
+                {t("set.saving")}
               </Badge>
             ) : (
               <Badge tone="success" icon="task_alt">
-                сохранено
+                {t("set.saved")}
               </Badge>
             )}
           </div>
         </div>
 
-        <Section icon="person" title="Аккаунт">
+        <Section icon="person" title={t("set.account")}>
           <Row
-            name="Имя пользователя"
-            desc="Для кнопки «Скачать любимые»: чей плейлист «Мне нравится» брать. Пусто — ваш аккаунт."
-            control={
-              <div className="control field-holder">
-                <TextField
-                  value={draft.username}
-                  placeholder="например, MrCriper10"
-                  icon="person"
-                  onChange={(value) => patch({ username: value })}
-                />
-              </div>
-            }
-          />
-          <Row
-            name="Аккаунт"
-            desc={account ? `UID ${account.uid} · ${account.login}` : "Проверьте токен в настройках ниже"}
+            name={t("wiz.account")}
+            desc={account ? account.login : t("set.accountDesc")}
             control={
               account ? (
                 <Badge tone={account.hasPlus ? "success" : "error"}>
-                  {account.hasPlus ? "Плюс активен" : "Плюс не активен"}
+                  {account.hasPlus ? t("set.plusActive") : t("set.plusInactive")}
                 </Badge>
               ) : (
-                <Badge tone="neutral">нет данных</Badge>
+                <Badge tone="neutral">{t("set.unknown")}</Badge>
               )
             }
           />
-          {account?.expires ? (
-            <Row
-              name="Подписка действует до"
-              desc={account.productId ? `Продукт: ${account.productId}` : undefined}
-              control={<span className="value-chip">{account.expires}</span>}
-            />
-          ) : null}
           <Row
-            name="Lossless"
+            name={t("set.subUntil")}
+            desc={account?.expires ? formatExpiry(account.expires, lang) : undefined}
+            control={
+              <Badge tone={account?.expires ? "primary" : "neutral"}>
+                {account?.expires ? formatExpiry(account.expires, lang) : t("set.subNoData")}              </Badge>
+            }
+          />
+          <Row
+            name={t("set.lossless")}
             desc={
               account?.losslessOk === false
-                ? `Сервер отдаёт ${account.probeCodec} ${account.probeBitrate} kbps вместо FLAC`
-                : "Проверка на реальном треке через get-file-info"
+                ? `${t("set.losslessNo")} ${account.probeCodec} ${account.probeBitrate} kbps`
+                : account?.losslessOk
+                  ? t("set.losslessOk")
+                  : t("wiz.losslessUnchecked")
             }
             control={
               <Button
@@ -152,7 +192,9 @@ export default function SettingsPage() {
                     const info = await api.probeLossless();
                     useApp.setState({ account: info });
                     toast(
-                      info.losslessOk ? "FLAC доступен" : `FLAC недоступен: ${info.probeCodec}`,
+                      info.losslessOk
+                        ? t("set.losslessFound")
+                        : `${t("set.losslessMissing")} ${info.probeCodec}`,
                       info.losslessOk ? "success" : "error",
                     );
                   } catch (error) {
@@ -160,21 +202,21 @@ export default function SettingsPage() {
                   }
                 }}
               >
-                Проверить
+                {t("set.check")}
               </Button>
             }
           />
         </Section>
 
-        <Section icon="folder" title="Куда и в каком качестве">
+        <Section icon="folder" title={t("set.files")}>
           <Row
-            name="Папка загрузки"
-            desc="Пусто — ~/Music/ym-dl"
+            name={t("set.folder")}
+            desc={t("set.folderDefault")}
             control={
               <div className="control field-holder">
                 <TextField
                   value={draft.downloadDir}
-                  placeholder="~/Music/ym-dl"
+                  placeholder="~/Music"
                   icon="folder_open"
                   onChange={(value) => patch({ downloadDir: value })}
                 />
@@ -182,8 +224,8 @@ export default function SettingsPage() {
             }
           />
           <Row
-            name="Выбрать папку"
-            desc="Открыть системный диалог"
+            name={t("set.folderPick")}
+            desc={t("set.folderPickDesc")}
             control={
               <Button
                 variant="tonal"
@@ -194,13 +236,13 @@ export default function SettingsPage() {
                   if (typeof picked === "string") patch({ downloadDir: picked });
                 }}
               >
-                Обзор…
+                {t("set.browse")}
               </Button>
             }
           />
           <Row
-            name="Качество"
-            desc="Lossless сервер отдаёт не всем аккаунтам — проверка выше показывает реальный результат"
+            name={t("set.quality")}
+            desc={t("set.qualityDesc")}
             control={
               <Segmented
                 value={draft.quality}
@@ -214,58 +256,79 @@ export default function SettingsPage() {
             }
           />
           <Row
-            name="Шаблон пути"
-            desc="#track-artist - #title даёт «Nirvana - Smells Like Teen Spirit». Ещё: #album, #album-artist, #year, #number, #number-padded, #disc-number, #track-id, #album-id, #artist-id"
-            control={
-              <div className="control field-holder">
-                <TextField
-                  value={draft.pathPattern}
-                  icon="edit"
-                  onChange={(value) => patch({ pathPattern: value })}
-                />
-              </div>
-            }
-          />
-          <Row
-            name="Пропускать уже скачанное"
-            desc="Не перекачивать треки, которые уже лежат в папке"
+            name={t("set.skipExisting")}
+            desc={t("set.skipExistingDesc")}
             control={
               <Switch
                 checked={draft.skipExisting}
-                label="Пропускать уже скачанное"
+                label={t("set.skipExisting")}
                 onChange={(value) => patch({ skipExisting: value })}
               />
             }
           />
         </Section>
 
-        <Section icon="subtitles" title="Теги и обложки">
+        <Section icon="queue_music" title={t("set.layout")}>
+          <div className="layout-list">
+            <p className="layout-intro">{t("set.layoutDesc")}</p>
+            {LAYOUTS.map((layout) => (
+              <button
+                key={layout.key}
+                type="button"
+                className={`layout-option${activeLayout === layout.key ? " active" : ""}`}
+                aria-pressed={activeLayout === layout.key}
+                onClick={() => patch({ pathPattern: layout.pattern })}
+              >
+                <div className="layout-text">
+                  <span className="layout-name">{t(layout.key)}</span>
+                  <span className="layout-hint">{t(layout.hint)}</span>
+                </div>
+                <code className="layout-example">{layout.example}</code>
+              </button>
+            ))}
+            <div className={`layout-option custom${activeLayout === "custom" ? " active" : ""}`}>
+              <div className="layout-text">
+                <span className="layout-name">{t("set.layoutCustom")}</span>
+                <span className="layout-hint">{t("layout.customHint")}</span>
+              </div>
+              <div className="layout-input">
+                <TextField
+                  value={draft.pathPattern}
+                  icon="edit"
+                  onChange={(value) => patch({ pathPattern: value })}
+                />
+              </div>
+            </div>
+          </div>
+        </Section>
+
+        <Section icon="subtitles" title={t("set.tags")}>
           <Row
-            name="Встраивать обложку"
-            desc="Обложка альбома попадёт внутрь файла"
+            name={t("set.cover")}
+            desc={t("set.coverDesc")}
             control={
               <Switch
                 checked={draft.embedCover}
-                label="Встраивать обложку"
+                label={t("set.cover")}
                 onChange={(value) => patch({ embedCover: value })}
               />
             }
           />
           <Row
-            name="Обложка в оригинале"
-            desc="Иначе — уменьшенная копия"
+            name={t("set.coverOriginal")}
+            desc={t("set.coverOriginalDesc")}
             control={
               <Switch
                 checked={draft.coverOriginal}
-                label="Обложка в оригинале"
+                label={t("set.coverOriginal")}
                 disabled={!draft.embedCover}
                 onChange={(value) => patch({ coverOriginal: value })}
               />
             }
           />
           <Row
-            name="Разрешение обложки"
-            desc="Сторона квадрата в пикселях"
+            name={t("set.coverSize")}
+            desc={t("set.coverSizeDesc")}
             control={
               <div className="control wide" style={{ display: "flex", gap: 12 }}>
                 <Slider
@@ -273,7 +336,7 @@ export default function SettingsPage() {
                   min={100}
                   max={1200}
                   step={100}
-                  label="Разрешение обложки"
+                  label={t("set.coverSize")}
                   disabled={!draft.embedCover || draft.coverOriginal}
                   onChange={(value) => patch({ coverResolution: value })}
                 />
@@ -282,34 +345,40 @@ export default function SettingsPage() {
             }
           />
           <Row
-            name="Текст песни"
-            desc="LRC — с таймингами, чтобы плеер подсвечивал строку"
+            name={t("set.lyrics")}
+            desc={t("set.lyricsDesc")}
             control={
               <Segmented
                 value={draft.lyricsFormat}
                 onChange={(value) => patch({ lyricsFormat: value })}
                 options={[
-                  { value: "none", label: "Не качать" },
-                  { value: "text", label: "Без таймингов" },
-                  { value: "lrc", label: "LRC" },
+                  { value: "none", label: t("set.lyricsNone") },
+                  { value: "text", label: t("set.lyricsPlain") },
+                  { value: "lrc", label: t("set.lyricsLrc") },
                 ]}
               />
             }
           />
           <Row
-            name="Брать текст с lrclib.net"
-            desc="Если в Яндексе текста нет — искать его в открытой базе"
+            name={t("set.lrclib")}
+            desc={t("set.lrclibDesc")}
             control={
               <Switch
                 checked={draft.lyricsFallback}
-                label="Резервный источник текста"
+                label={t("set.lrclib")}
+                disabled={draft.lyricsFormat === "none"}
                 onChange={(value) => patch({ lyricsFallback: value })}
               />
             }
           />
+          {draft.lyricsFallback && draft.lyricsFormat !== "none" ? (
+            <div className="setting-note">
+              <Badge tone="warning">{t("set.lrclibBadge")}</Badge>
+            </div>
+          ) : null}
           <Row
-            name="Уровень совместимости"
-            desc="0 — обычные теги, 1 — несколько исполнителей через «; » для плееров"
+            name={t("set.compat")}
+            desc={t("set.compatDesc")}
             control={
               <Segmented
                 value={draft.compatibilityLevel}
@@ -323,62 +392,62 @@ export default function SettingsPage() {
           />
         </Section>
 
-        <Section icon="tune" title="Что качать">
+        <Section icon="tune" title={t("set.what")}>
           <Row
-            name="Только музыка"
-            desc="Пропускать подкасты и аудиокниги у исполнителя"
+            name={t("set.onlyMusic")}
+            desc={t("set.onlyMusicDesc")}
             control={
               <Switch
                 checked={draft.onlyMusic}
-                label="Только музыка"
+                label={t("set.onlyMusic")}
                 onChange={(value) => patch({ onlyMusic: value })}
               />
             }
           />
           <Row
-            name="Только альбомы исполнителя"
-            desc="Не брать сборники, где он лишь один из участников"
+            name={t("set.stickArtist")}
+            desc={t("set.stickArtistDesc")}
             control={
               <Switch
                 checked={draft.stickToArtist}
-                label="Только альбомы исполнителя"
+                label={t("set.stickArtist")}
                 onChange={(value) => patch({ stickToArtist: value })}
               />
             }
           />
           <Row
-            name="Не чистить имена файлов"
-            desc="Оставьте выключенным: иначе символы вроде / и : попадут в имя файла и запись упадёт с ошибкой"
+            name={t("set.unsafePath")}
+            desc={t("set.unsafePathDesc")}
             control={
               <Switch
                 checked={draft.unsafePath}
-                label="Не чистить имена файлов"
+                label={t("set.unsafePath")}
                 onChange={(value) => patch({ unsafePath: value })}
               />
             }
           />
+        </Section>
+
+        <Section icon="network_check" title={t("set.network")} collapsible>
           <Row
-            name="Параллельных загрузок"
-            desc="Больше — быстрее, но выше шанс поймать лимит запросов"
+            name={t("set.parallel")}
+            desc={t("set.parallelDesc")}
             control={
               <div className="control wide" style={{ display: "flex", gap: 12 }}>
                 <Slider
                   value={draft.concurrent}
                   min={1}
                   max={6}
-                  label="Параллельных загрузок"
+                  label={t("set.parallel")}
                   onChange={(value) => patch({ concurrent: value })}
                 />
                 <span className="value-chip">{draft.concurrent}</span>
               </div>
             }
           />
-        </Section>
-
-        <Section icon="network_check" title="Сеть и лимиты" collapsible>
           <Row
-            name="Таймаут запроса"
-            desc="Секунды ожидания ответа сервера"
+            name={t("set.timeout")}
+            desc={t("set.timeoutDesc")}
             control={
               <div className="control wide" style={{ display: "flex", gap: 12 }}>
                 <Slider
@@ -386,23 +455,23 @@ export default function SettingsPage() {
                   min={5}
                   max={120}
                   step={5}
-                  label="Таймаут"
+                  label={t("set.timeout")}
                   onChange={(value) => patch({ timeout: value })}
                 />
-                <span className="value-chip">{draft.timeout} с</span>
+                <span className="value-chip">{draft.timeout} s</span>
               </div>
             }
           />
           <Row
-            name="Попыток при ошибке"
-            desc="Сколько раз повторять запрос, прежде чем сдаться (максимум 6)"
+            name={t("set.tries")}
+            desc={t("set.triesDesc")}
             control={
               <div className="control wide" style={{ display: "flex", gap: 12 }}>
                 <Slider
                   value={draft.tries}
                   min={1}
                   max={6}
-                  label="Попытки"
+                  label={t("set.tries")}
                   onChange={(value) => patch({ tries: value })}
                 />
                 <span className="value-chip">{draft.tries}</span>
@@ -410,73 +479,60 @@ export default function SettingsPage() {
             }
           />
           <Row
-            name="Пауза между попытками"
-            desc="Растёт экспоненциально при 429 и 5xx"
+            name={t("set.retryDelay")}
+            desc={t("set.retryDelayDesc")}
             control={
               <div className="control wide" style={{ display: "flex", gap: 12 }}>
                 <Slider
                   value={draft.retryDelay}
                   min={0}
                   max={30}
-                  label="Пауза между попытками"
+                  label={t("set.retryDelay")}
                   onChange={(value) => patch({ retryDelay: value })}
                 />
-                <span className="value-chip">{draft.retryDelay} с</span>
+                <span className="value-chip">{draft.retryDelay} s</span>
               </div>
             }
           />
           <Row
-            name="Пауза между треками"
-            desc="Секунды после каждого успешного трека"
+            name={t("set.trackDelay")}
+            desc={t("set.trackDelayDesc")}
             control={
               <div className="control wide" style={{ display: "flex", gap: 12 }}>
                 <Slider
                   value={draft.delay}
                   min={0}
                   max={30}
-                  label="Пауза между треками"
+                  label={t("set.trackDelay")}
                   onChange={(value) => patch({ delay: value })}
                 />
-                <span className="value-chip">{draft.delay} с</span>
+                <span className="value-chip">{draft.delay} s</span>
               </div>
             }
           />
         </Section>
 
-        <Section icon="audio_file" title="FLAC и постобработка">
+        <Section icon="audio_file" title={t("set.flac")}>
           <Row
-            name="Извлекать FLAC из .m4a"
-            desc="Яндекс отдаёт lossless как FLAC внутри MP4; ffmpeg перепаковывает его в .flac"
+            name={t("set.extractFlac")}
+            desc={t("set.extractFlacDesc")}
             control={
               <Switch
                 checked={draft.extractFlac}
-                label="Извлекать FLAC"
+                label={t("set.extractFlac")}
                 onChange={(value) => patch({ extractFlac: value })}
               />
             }
           />
           <Row
-            name="Старые .m4a — в папку _old_m4a"
-            desc="Чтобы пропуск готовых файлов не блокировал перекачивание"
-            control={
-              <Switch
-                checked={draft.quarantineLossy}
-                label="Старые lossy в бэкап"
-                onChange={(value) => patch({ quarantineLossy: value })}
-              />
-            }
-          />
-          <Row
-            name="ffmpeg"
+            name={t("set.ffmpeg")}
             desc={
-              env?.ffmpeg && env?.ffprobe
-                ? env.ffmpegPath
-                : "Не найден. Без него всё работает, но вместо FLAC останется .m4a"
+              env?.ffmpeg && env?.ffprobe ? env.ffmpegPath : t("set.ffmpegMissing")
             }
             control={
               env?.ffmpeg && env?.ffprobe ? (
                 <Badge tone="success" icon="check">
-                  готов
+                  {t("set.ffmpegFound")}
                 </Badge>
               ) : (
                 <Button
@@ -487,14 +543,14 @@ export default function SettingsPage() {
                     void openUrl("https://www.gyan.dev/ffmpeg/builds/").catch(() => undefined)
                   }
                 >
-                  Как установить
+                  {t("set.ffmpegHow")}
                 </Button>
               )
             }
           />
           <Row
-            name="Перепаковать папку сейчас"
-            desc="Пройти по папке и вытащить FLAC из уже скачанных .m4a"
+            name={t("set.repack")}
+            desc={t("set.repackDesc")}
             control={
               <Button
                 variant="tonal"
@@ -505,7 +561,10 @@ export default function SettingsPage() {
                   try {
                     const stats = await api.postProcess();
                     toast(
-                      `FLAC извлечён: ${stats.converted}, в бэкап: ${stats.quarantined}, ошибок: ${stats.failed}`,
+                      t("set.repackDone", {
+                        converted: stats.converted,
+                        failed: stats.failed,
+                      }),
                       stats.failed ? "error" : "success",
                     );
                   } catch (error) {
@@ -513,39 +572,54 @@ export default function SettingsPage() {
                   }
                 }}
               >
-                Запустить
+                {t("set.repackRun")}
               </Button>
             }
           />
         </Section>
 
-        <Section icon="palette" title="Внешний вид">
+        <Section icon="palette" title={t("set.appearance")}>
           <Row
-            name="Тема"
-            desc="Системная подхватывает оформление ОС"
+            name={t("set.theme")}
+            desc={t("set.themeDesc")}
             control={
               <Segmented
                 value={draft.theme}
                 onChange={(value) => patch({ theme: value })}
                 options={[
-                  { value: "system", label: "Системная" },
-                  { value: "light", label: "Светлая" },
-                  { value: "dark", label: "Тёмная" },
+                  { value: "system", label: t("set.themeSystem") },
+                  { value: "light", label: t("set.themeLight") },
+                  { value: "dark", label: t("set.themeDark") },
                 ]}
               />
             }
           />
           <Row
-            name="Акцент"
-            desc="Цветовая схема Material You"
+            name={t("set.language")}
+            desc={t("set.languageDesc")}
+            control={
+              <Segmented
+                value={draft.language}
+                onChange={(value) => patch({ language: value })}
+                options={[
+                  { value: "auto", label: t("set.langAuto") },
+                  { value: "ru", label: t("set.langRu") },
+                  { value: "en", label: t("set.langEn") },
+                ]}
+              />
+            }
+          />
+          <Row
+            name={t("set.accent")}
+            desc={t("set.accentDesc")}
             control={
               <div className="accent-row">
                 {ACCENTS.map((accent) => (
                   <button
                     key={accent.value}
                     type="button"
-                    title={accent.label}
-                    aria-label={accent.label}
+                    title={t(accent.key)}
+                    aria-label={t(accent.key)}
                     aria-pressed={draft.accent === accent.value}
                     className="accent-swatch"
                     style={{ background: accent.color }}
@@ -557,34 +631,41 @@ export default function SettingsPage() {
           />
         </Section>
 
-        <Section icon="system_update" title="Обновления">
+        <Section icon="system_update" title={t("set.updates")}>
           <Row
-            name="Проверять обновления при запуске"
-            desc="Раз в сессию, тихо, без сетевых ошибок в лицо"
+            name={t("set.autoCheck")}
+            desc={t("set.autoCheckDesc")}
             control={
               <Switch
                 checked={draft.checkUpdates}
-                label="Проверять обновления"
+                label={t("set.autoCheck")}
                 onChange={(value) => patch({ checkUpdates: value })}
               />
             }
           />
           <Row
-            name="Проверить сейчас"
-            desc="Приложение и ffmpeg"
+            name={t("set.checkNow")}
+            desc={t("set.checkNowDesc")}
             control={
-              <Button variant="tonal" size="compact" icon="refresh" onClick={checkUpdates} disabled={checking}>
-                {checking ? "Проверяю…" : "Проверить"}
+              <Button
+                variant="tonal"
+                size="compact"
+                icon="refresh"
+                onClick={checkUpdates}
+                disabled={checking}
+              >
+                {checking ? t("set.checking") : t("set.check")}
               </Button>
             }
           />
           {pending ? (
             <div className="update-row">
               <div className="names">
-                <div className="md-body">Доступна версия {pending.version}</div>
+                <div className="md-body">
+                  {t("set.available")} {pending.version}
+                </div>
                 <div className="md-body-sm muted">
-                  Сейчас установлена {pending.currentVersion}. Обновление скачается и
-                  установится само, переустанавливать вручную не нужно.
+                  {t("set.installedIs")} {pending.currentVersion}
                 </div>
               </div>
               <Button
@@ -595,28 +676,34 @@ export default function SettingsPage() {
                 disabled={installing !== null}
               >
                 {installing === null
-                  ? "Обновить"
+                  ? t("set.updateBtn")
                   : installing > 0
                     ? `${installing}%`
-                    : "Скачиваю…"}
+                    : t("set.downloading")}
               </Button>
             </div>
           ) : null}
           {updates?.map((entry) => (
-            <div key={entry.name} className="update-row">
+            <div key={entry.kind} className="update-row">
               <div className="names">
-                <div className="md-body">{entry.name}</div>
-                <div className="md-body-sm muted">{entry.detail}</div>
+                <div className="md-body">
+                  {entry.kind === "app" ? t("set.appName") : "ffmpeg"}
+                </div>
+                <div className="md-body-sm muted">
+                  {entry.kind === "app" ? entry.detail : t("set.ffmpegSeparate")}
+                </div>
               </div>
-              <Badge tone="neutral">у вас {entry.installed}</Badge>
+              <Badge tone="neutral">
+                {t("set.yours")} {entry.installed}
+              </Badge>
               <Badge tone={!entry.checked ? "warning" : entry.newer ? "warning" : "success"}>
                 {!entry.checked
-                  ? "не проверилось"
+                  ? t("set.notChecked")
                   : entry.newer
-                    ? `доступно ${entry.latest}`
-                    : "актуально"}
+                    ? `${t("set.availableShort")} ${entry.latest}`
+                    : t("set.actual")}
               </Badge>
-              {entry.newer && entry.name === "Приложение" && (
+              {entry.newer && entry.kind === "app" && (
                 <Button
                   variant="tonal"
                   size="compact"
@@ -627,27 +714,27 @@ export default function SettingsPage() {
                     );
                   }}
                 >
-                  Страница релиза
+                  {t("set.releasePage")}
                 </Button>
               )}
             </div>
           ))}
         </Section>
 
-        <Section icon="key" title="Токен и файлы">
+        <Section icon="key" title={t("set.token")}>
           <Row
-            name="Путь к токену"
-            desc="Лежит рядом с программой: папку можно перенести целиком"
-            control={<span className="path-box">{env?.tokenPath ?? "—"}</span>}
+            name={t("set.tokenPath")}
+            desc={t("set.tokenPathDesc")}
+            control={<span className="path-box">{env?.tokenStore ?? "—"}</span>}
           />
           <Row
-            name="Путь к настройкам"
-            desc="JSON, можно править руками"
+            name={t("set.configPath")}
+            desc={t("set.configPathDesc")}
             control={<span className="path-box">{env?.configPath ?? "—"}</span>}
           />
           <Row
-            name="Заменить токен"
-            desc="Сменить аккаунт Яндекс.Музыки"
+            name={t("set.resetToken")}
+            desc={t("set.resetTokenDesc")}
             control={
               <Button
                 variant="danger-tonal"
@@ -661,12 +748,12 @@ export default function SettingsPage() {
                   }
                 }}
               >
-                Сбросить токен
+                {t("set.resetBtn")}
               </Button>
             }
           />
           <Row
-            name="Версия"
+            name={t("set.version")}
             desc={env?.os ?? ""}
             control={<Badge tone="primary">{env?.appVersion ?? "—"}</Badge>}
           />
@@ -674,6 +761,25 @@ export default function SettingsPage() {
       </div>
     </div>
   );
+}
+
+/**
+ * Turns the API's `2026-12-11T18:55:36+00:00` into a date a person reads.
+ *
+ * Yandex reports the end of the subscription in UTC; the date is shown in Moscow
+ * time, which is what the account page uses.
+ */
+function formatExpiry(value: string, lang: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(lang === "en" ? "en-GB" : "ru-RU", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Europe/Moscow",
+  }).format(date);
 }
 
 function Section({
@@ -700,7 +806,7 @@ function Section({
             type="button"
             className={`section-toggle${open ? " open" : ""}`}
             aria-expanded={open}
-            aria-label={open ? `Свернуть «${title}»` : `Развернуть «${title}»`}
+            aria-label={open ? `− ${title}` : `+ ${title}`}
             onClick={() => setOpen((value) => !value)}
           >
             <span className="chevron" aria-hidden />

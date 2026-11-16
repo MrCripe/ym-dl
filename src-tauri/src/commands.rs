@@ -376,7 +376,7 @@ pub fn environment() -> EnvironmentInfo {
             .unwrap_or_default(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         config_path: config::config_path().display().to_string(),
-        token_path: config::token_path().display().to_string(),
+        token_store: config::token_store_label(),
         os: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
     }
 }
@@ -388,11 +388,48 @@ pub async fn post_process(state: State<'_, AppState>) -> Result<ffmpeg::PostProc
     if !ffmpeg::available() {
         return Err("Нужны ffmpeg и ffprobe.".into());
     }
-    Ok(tauri::async_runtime::spawn_blocking(move || {
-        ffmpeg::post_process(&dir, settings.quarantine_lossy)
-    })
-    .await
-    .map_err(|error| format!("{error}"))?)
+    tauri::async_runtime::spawn_blocking(move || ffmpeg::post_process(&dir))
+        .await
+        .map_err(|error| format!("{error}"))
+}
+
+/// Opens the download folder in the system file manager.
+///
+/// Called from Rust rather than from the frontend: a path opened through the
+/// webview would need a permission scope listing every possible folder, while the
+/// backend already knows the configured one.
+///
+/// The file manager is started directly instead of through the opener plugin,
+/// which asked the shell for an association and on Windows answered a valid
+/// folder with "Windows cannot access the specified path".
+#[tauri::command]
+pub fn open_download_dir(state: State<'_, AppState>) -> Result<(), String> {
+    let dir = state.settings().target_dir();
+    std::fs::create_dir_all(&dir).map_err(|error| format!("не удалось создать папку: {error}"))?;
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("explorer");
+        command.arg(&dir);
+        command
+    };
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(&dir);
+        command
+    };
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg(&dir);
+        command
+    };
+    // Not wrapped in `hidden()`: the file manager is a GUI program, and starting it
+    // with CREATE_NO_WINDOW made it exit immediately without opening a window.
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("не удалось открыть папку: {error}"))
 }
 
 #[tauri::command]

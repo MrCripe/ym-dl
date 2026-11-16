@@ -68,6 +68,11 @@ struct Shared {
     /// to the same name (same artist/title, or a template without #track-id)
     /// would otherwise overwrite each other.
     claimed: Mutex<std::collections::HashSet<PathBuf>>,
+    /// Tracks whose file was written without lyrics. The open database is asked
+    /// once for all of them after the downloads finish: asking per track during a
+    /// big playlist is what pushed lrclib into its rate limit, and a request that
+    /// hits the limit leaves the track without lyrics for good.
+    missing_lyrics: Mutex<Vec<(usize, PathBuf)>>,
 }
 
 impl Shared {
@@ -115,6 +120,16 @@ impl Shared {
             Err(poisoned) => poisoned.into_inner(),
         };
         claim_path(&mut claimed, path)
+    }
+
+    /// Remembers a track whose file was written without lyrics, so the closing
+    /// pass can ask the open database once for all of them.
+    fn defer_lyrics(&self, index: usize, path: &Path) {
+        let mut pending = match self.missing_lyrics.lock() {
+            Ok(pending) => pending,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        pending.push((index, path.to_path_buf()));
     }
 
     fn settle(&self, index: usize, status: &str, message: &str, path: &str) {
@@ -275,12 +290,14 @@ impl Shared {
                 .unwrap_or_else(|_| "failed".to_string());
             match outcome.as_str() {
                 "converted" => {
-                    ffmpeg::quarantine(&final_path, target_dir);
+                    // The FLAC holds the same audio; keeping the .m4a too only
+                    // doubles the size of the library.
+                    ffmpeg::drop_source(&final_path);
                     final_path = final_path.with_extension("flac");
                     self.log("ok", format!("FLAC извлечён: {}", final_path.display()));
                 }
                 "exists" => {
-                    ffmpeg::quarantine(&final_path, target_dir);
+                    ffmpeg::drop_source(&final_path);
                     final_path = final_path.with_extension("flac");
                 }
                 _ => self.log(
@@ -293,7 +310,7 @@ impl Shared {
         // Tags go into the file that is actually kept. Tagging the m4a before the
         // FLAC extraction lost the cover and most fields on the way through ffmpeg,
         // and the m4a muxer refuses a FLAC stream outright.
-        if let Err(error) = self.tag(track, &final_path, &item.id).await {
+        if let Err(error) = self.tag(index, track, &final_path, &item.id).await {
             self.log("warn", format!("Теги не записались для «{}»: {error:#}", item.title));
         }
 
@@ -305,7 +322,7 @@ impl Shared {
         self.settle(index, "ok", &label, &final_path.display().to_string());
     }
 
-    async fn tag(&self, track: &Track, path: &Path, track_id: &str) -> Result<()> {
+    async fn tag(&self, index: usize, track: &Track, path: &Path, track_id: &str) -> Result<()> {
         let album_id = track
             .albums
             .first()
@@ -337,14 +354,9 @@ impl Shared {
 
         if self.settings.lyrics_format != "none" {
             let want_synced = self.settings.lyrics_format == "lrc";
-            let found = crate::lyrics::fetch(
-                &self.client,
-                track,
-                track_id,
-                want_synced,
-                self.settings.lyrics_fallback,
-            )
-            .await;
+            // Yandex only here. The open database is a separate pass after the
+            // job, so parallel downloads never hammer it.
+            let found = crate::lyrics::yandex_only(&self.client, track, track_id, want_synced).await;
             match found {
                 Some(lyrics) => {
                     // Embedded so the text travels with the file. A sidecar is only
@@ -354,21 +366,21 @@ impl Shared {
                         let _ = std::fs::write(path.with_extension("lrc"), &lyrics.text);
                     }
                     payload.lyrics = Some(lyrics.text);
-                    // Only worth a line when it is not the plain case: a whole
-                    // playlist would otherwise double the log with "yandex, with
-                    // timings" for every track.
-                    if lyrics.source != "yandex" || !lyrics.synced {
+                    if !lyrics.synced {
                         self.log(
                             "info",
-                            format!(
-                                "Текст песни: {} ({})",
-                                lyrics.source,
-                                if lyrics.synced { "с таймингами" } else { "без таймингов" }
-                            ),
+                            format!("Текст песни без таймингов: «{}»", track.title),
                         );
                     }
                 }
-                None => self.log("info", format!("Текста песни нет: «{}»", track.title)),
+                None => {
+                    if self.settings.lyrics_fallback {
+                        // Deferred: this track is retried in the closing pass.
+                        self.defer_lyrics(index, path);
+                    } else {
+                        self.log("info", format!("Текста песни нет: «{}»", track.title));
+                    }
+                }
             }
         }
 
@@ -422,6 +434,7 @@ impl Job {
                 states: Mutex::new(Vec::new()),
                 total: AtomicUsize::new(track_ids.len()),
                 claimed: Mutex::new(std::collections::HashSet::new()),
+                missing_lyrics: Mutex::new(Vec::new()),
             }),
             track_ids,
         }
@@ -537,6 +550,78 @@ impl Job {
             let _ = handle.await;
         }
 
+        // Lyrics from the open database, one pass, after every file is written.
+        // Asking per track while six downloads ran at once is what pushed lrclib
+        // into its rate limit; a limited request silently left that track with no
+        // lyrics at all. One sequential pass keeps the request rate low and gives
+        // every track the same chance.
+        if shared.settings.lyrics_format != "none" && shared.settings.lyrics_fallback {
+            let pending = {
+                let list = match shared.missing_lyrics.lock() {
+                    Ok(list) => list,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                list.clone()
+            };
+            if !pending.is_empty() && !shared.control.is_cancelled() {
+                let want_synced = shared.settings.lyrics_format == "lrc";
+                let total = pending.len();
+                shared.log(
+                    "info",
+                    format!(
+                        "Ищу тексты в открытой базе lrclib: {total} трек(ов). Это может занять время"
+                    ),
+                );
+                let mut found = 0usize;
+                for (index, path) in pending {
+                    if shared.control.is_cancelled() {
+                        break;
+                    }
+                    let Some(track) = tracks.get(index) else { continue };
+                    let Some(lyrics) =
+                        crate::lyrics::from_open_database(&shared.client, track, want_synced).await
+                    else {
+                        continue;
+                    };
+                    if lyrics.synced {
+                        let _ = std::fs::write(path.with_extension("lrc"), &lyrics.text);
+                    }
+                    // The mp4 muxer refuses to copy a FLAC stream, so a lossless
+                    // file can reject the tag even though everything else worked.
+                    // A `.lrc` next to the track is what players read anyway, so
+                    // the text is not lost.
+                    match audio::write_lyrics(&path, &lyrics.text) {
+                        Ok(()) => found += 1,
+                        Err(error) => {
+                            let sidecar = path.with_extension("lrc");
+                            if std::fs::write(&sidecar, &lyrics.text).is_ok() {
+                                found += 1;
+                                shared.log(
+                                    "info",
+                                    format!(
+                                        "Текст для «{}» записан рядом файлом .lrc: {error:#}",
+                                        track.title
+                                    ),
+                                );
+                            } else {
+                                shared.log(
+                                    "warn",
+                                    format!("Текст не записался в «{}»: {error:#}", track.title),
+                                );
+                            }
+                        }
+                    }
+                }
+                if shared.control.is_cancelled() {
+                    // A cancelled pass did not finish, so an "N of M" line would
+                    // read as if the database had nothing for the rest.
+                    shared.log("info", "Поиск текстов прерван вместе с загрузкой");
+                } else {
+                    shared.log("ok", format!("Тексты из открытой базы: {found} из {total}"));
+                }
+            }
+        }
+
         let final_progress = JobProgress {
             done: shared.counters.done.load(Ordering::SeqCst),
             total: shared.total.load(Ordering::SeqCst),
@@ -556,20 +641,11 @@ impl Job {
         if shared.settings.extract_flac && ffmpeg::available() {
             shared.log("info", "Проверяю папку на настоящий FLAC…");
             let root = target_dir.clone();
-            let quarantine_lossy = shared.settings.quarantine_lossy;
-            let stats = tauri::async_runtime::spawn_blocking(move || {
-                ffmpeg::post_process(&root, quarantine_lossy)
-            })
-            .await
-            .unwrap_or_default();
+            let stats = tauri::async_runtime::spawn_blocking(move || ffmpeg::post_process(&root))
+                .await
+                .unwrap_or_default();
             if stats.converted > 0 {
                 shared.log("ok", format!("Извлечено FLAC из .m4a: {}", stats.converted));
-            }
-            if stats.quarantined > 0 {
-                shared.log(
-                    "info",
-                    format!("Старые lossy-файлы убраны в {}: {}", ffmpeg::BACKUP_DIR, stats.quarantined),
-                );
             }
             if stats.failed > 0 {
                 shared.log("warn", format!("Не удалось перепаковать файлов: {}", stats.failed));

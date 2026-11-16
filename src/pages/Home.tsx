@@ -1,9 +1,11 @@
 import { useMemo, useState } from "react";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { useApp } from "../lib/store";
+import { useT } from "../lib/i18n";
 import { Badge, Button, Checkbox, Icon, IconButton, TextField } from "../components/ui";
 
 export default function Home() {
+  const t = useT();
   const source = useApp((state) => state.source);
   const selected = useApp((state) => state.selected);
   const loading = useApp((state) => state.loadingSource);
@@ -25,21 +27,19 @@ export default function Home() {
     [source],
   );
 
-  const targetPath = settings?.downloadDir?.trim()
-    ? settings.downloadDir
-    : "~/Music/ym-dl";
+  const targetPath = settings?.downloadDir?.trim() ? settings.downloadDir : "~/Music";
 
   return (
     <div className="page">
       <div className="page-narrow">
         <div className="page-header">
           <div>
-            <h1>Главная</h1>
-            <p>Вставьте ссылку или скачайте любимые треки</p>
+            <h1>{t("home.title")}</h1>
+            <p>{t("home.subtitle")}</p>
           </div>
-          {account?.name || settings?.username ? (
+          {account?.name || account?.login ? (
             <Badge tone="secondary" icon="person">
-              {account?.name || settings?.username}
+              {account.name || account.login}
             </Badge>
           ) : null}
         </div>
@@ -47,18 +47,18 @@ export default function Home() {
         <div className="source-card animate-in">
           <div className="source-input">
             <TextField
-              label="Ссылка на трек, альбом, плейлист или исполнителя"
               value={url}
               icon="link"
               placeholder="https://music.yandex.ru/album/…"
               onChange={setUrl}
               onEnter={() => url.trim() && resolve(url.trim())}
               disabled={loading}
+              quiet
               trailing={
                 url ? (
                   <IconButton
                     icon="close"
-                    label="Очистить"
+                    label={t("home.clear")}
                     size="small"
                     onClick={() => setUrl("")}
                   />
@@ -67,7 +67,7 @@ export default function Home() {
             />
             <IconButton
               icon="content_paste"
-              label="Вставить из буфера"
+              label={t("home.paste")}
               variant="tonal"
               onClick={async () => {
                 try {
@@ -78,32 +78,27 @@ export default function Home() {
                 }
               }}
             />
-            <Button icon="search" onClick={() => url.trim() && resolve(url.trim())} disabled={loading || !url.trim()}>
-              {loading ? "Загружаю…" : "Показать треки"}
+            <Button
+              icon="search"
+              onClick={() => url.trim() && resolve(url.trim())}
+              disabled={loading || !url.trim()}
+            >
+              {loading ? t("home.loading") : t("home.show")}
             </Button>
           </div>
 
           <div className="divider" />
 
           <div className="quick-row">
-            <Button
-              variant="outlined"
-              icon="favorite"
-              onClick={loadLikes}
-              disabled={loading}
-            >
-              Скачать любимые
+            <Button variant="outlined" icon="favorite" onClick={loadLikes} disabled={loading}>
+              {t("home.likes")}
             </Button>
-            <span className="md-body-sm muted">
-              {settings?.username
-                ? `Любимые треки пользователя ${settings.username}`
-                : "Любимые треки вашего аккаунта · имя пользователя задаётся в настройках"}
-            </span>
+            <span className="md-body-sm muted">{t("home.likesHint")}</span>
           </div>
 
           {source ? (
             <div className="md-body-sm muted">
-              {source.kind === "likes" ? "Мне нравится" : source.title} · {source.subtitle}
+              {source.kind === "likes" ? t("home.likesOwn") : source.title} · {source.subtitle}
             </div>
           ) : null}
         </div>
@@ -112,11 +107,11 @@ export default function Home() {
           <div className="selection" style={{ marginTop: 20 }}>
             <div className="selection-head">
               <div className="titles">
-                <h2>Загружаю список…</h2>
+                <h2>{t("home.loadingList")}</h2>
                 <span className="sub">
                   {resolveProgress && resolveProgress.total > 0
-                    ? `Альбом ${resolveProgress.done} из ${resolveProgress.total}`
-                    : "Это может занять несколько секунд"}
+                    ? `${resolveProgress.done} / ${resolveProgress.total}`
+                    : t("home.loadingHint")}
                 </span>
               </div>
             </div>
@@ -130,18 +125,28 @@ export default function Home() {
               <div className="titles">
                 <h2 className="truncate">{source.title}</h2>
                 <span className="sub">
-                  {source.subtitle} · выбрано{" "}
+                  {source.subtitle} · {t("home.selected")}{" "}
                   <span key={selected.size} className="count-pop">
                     {selected.size}
                   </span>{" "}
-                  из {available} доступных
+                  {t("home.of")} {available} {t("home.available")}
                 </span>
               </div>
-              <Button variant="text" size="compact" icon="select_all" onClick={() => setAllTracks(true)}>
-                Выбрать все
+              <Button
+                variant="text"
+                size="compact"
+                icon="select_all"
+                onClick={() => setAllTracks(true)}
+              >
+                {t("home.selectAll")}
               </Button>
-              <Button variant="text" size="compact" icon="deselect" onClick={() => setAllTracks(false)}>
-                Снять все
+              <Button
+                variant="text"
+                size="compact"
+                icon="deselect"
+                onClick={() => setAllTracks(false)}
+              >
+                {t("home.selectNone")}
               </Button>
             </div>
 
@@ -169,7 +174,9 @@ export default function Home() {
                         {track.album ? ` · ${track.album}` : ""}
                       </span>
                     </div>
-                    {!track.available ? <Badge tone="error">недоступен</Badge> : null}
+                    {!track.available ? (
+                      <Badge tone="error">{t("home.unavailable")}</Badge>
+                    ) : null}
                     <span className="duration">{track.duration}</span>
                   </div>
                 );
@@ -181,7 +188,7 @@ export default function Home() {
               <span className="path grow">{targetPath}</span>
               {downloading ? (
                 <Button variant="danger-tonal" icon="stop_circle" onClick={stop}>
-                  Остановить
+                  {t("home.stop")}
                 </Button>
               ) : (
                 <Button
@@ -190,7 +197,7 @@ export default function Home() {
                   disabled={selected.size === 0}
                   onClick={start}
                 >
-                  Начать
+                  {t("home.start")}
                 </Button>
               )}
             </div>
@@ -198,10 +205,8 @@ export default function Home() {
         ) : (
           <div className="empty-state animate-in">
             <Icon name="queue_music" />
-            <div className="md-title">Пока ничего не выбрано</div>
-            <div className="md-body-sm">
-              Вставьте ссылку на альбом, плейлист или трек — появится список с галочками.
-            </div>
+            <div className="md-title">{t("home.emptyTitle")}</div>
+            <div className="md-body-sm">{t("home.emptyBody")}</div>
           </div>
         )}
       </div>

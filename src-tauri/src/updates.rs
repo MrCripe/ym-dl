@@ -91,6 +91,7 @@ pub async fn check_updates(app_version: &str) -> Vec<UpdateEntry> {
 
     let entry = match latest_release_tag().await {
         Ok(tag) => UpdateEntry {
+            kind: "app".into(),
             name: "Приложение".into(),
             installed: app_version.to_string(),
             newer: newer(&tag, app_version),
@@ -99,6 +100,7 @@ pub async fn check_updates(app_version: &str) -> Vec<UpdateEntry> {
             detail: format!("github.com/{APP_REPO}/releases"),
         },
         Err(error) => UpdateEntry {
+            kind: "app".into(),
             name: "Приложение".into(),
             installed: app_version.to_string(),
             newer: false,
@@ -114,6 +116,7 @@ pub async fn check_updates(app_version: &str) -> Vec<UpdateEntry> {
     let installed = ffmpeg_version();
     entries.push(if installed.is_empty() {
         UpdateEntry {
+            kind: "ffmpeg".into(),
             name: "ffmpeg".into(),
             installed: "не найден".into(),
             latest: "—".into(),
@@ -123,6 +126,7 @@ pub async fn check_updates(app_version: &str) -> Vec<UpdateEntry> {
         }
     } else {
         UpdateEntry {
+            kind: "ffmpeg".into(),
             name: "ffmpeg".into(),
             installed,
             latest: "—".into(),

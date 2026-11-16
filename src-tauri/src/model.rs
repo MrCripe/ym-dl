@@ -350,6 +350,9 @@ pub struct ResolveProgress {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateEntry {
+    /// Stable identifier the UI translates: `app` or `ffmpeg`. A display name sent
+    /// from here would stay Russian in an English interface.
+    pub kind: String,
     pub name: String,
     pub installed: String,
     pub latest: String,
@@ -368,6 +371,8 @@ pub struct EnvironmentInfo {
     pub ffmpeg_path: String,
     pub app_version: String,
     pub config_path: String,
-    pub token_path: String,
+    /// Where the token actually lives: the credential store, or a file path when
+    /// the system has no store and the plaintext fallback was used.
+    pub token_store: String,
     pub os: String,
 }

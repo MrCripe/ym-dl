@@ -3,11 +3,13 @@ import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, type AccountInfo } from "../lib/api";
 import { useApp } from "../lib/store";
+import { useT } from "../lib/i18n";
 import { Badge, Button, Icon, TextField } from "../components/ui";
 
 const TOKEN_HELP = "https://ym.marshal.dev/token/";
 
 export default function Wizard() {
+  const t = useT();
   const finishWizard = useApp((state) => state.finishWizard);
   const toast = useApp((state) => state.toast);
 
@@ -37,7 +39,7 @@ export default function Wizard() {
     try {
       const info = await api.loginYandex();
       setAccount(info);
-      toast(`Вход выполнен: ${info.name || info.login || info.uid}`, "success");
+      toast(`${t("wiz.loggedIn")}: ${info.name || info.login || info.uid}`, "success");
     } catch (problem) {
       setAccount(null);
       setError(String((problem as Error).message));
@@ -48,7 +50,7 @@ export default function Wizard() {
 
   const verify = async () => {
     if (!token.trim()) {
-      setError("Вставьте токен — без него Яндекс.Музыка не отдаст музыку.");
+      setError(t("wiz.tokenEmpty"));
       return;
     }
     setBusy("check");
@@ -67,7 +69,7 @@ export default function Wizard() {
   const proceed = async () => {
     if (!account) return;
     await finishWizard(account);
-    toast(`Привет, ${account.name || account.login}!`, "success");
+    toast(t("wiz.hello", { name: account.name || account.login || "" }), "success");
   };
 
   return (
@@ -76,11 +78,8 @@ export default function Wizard() {
         <div className="wizard-logo">
           <Icon name="graphic_eq" filled />
         </div>
-        <h1>Добро пожаловать в ym-dl</h1>
-        <p className="lede">
-          Загрузчик Яндекс.Музыки. Войдите в аккаунт — приложение само получит токен и
-          сразу скажет, отдаёт ли сервис lossless именно вам.
-        </p>
+        <h1>{t("wiz.title")}</h1>
+        <p className="lede">{t("wiz.lede")}</p>
 
         {account ? (
           <AccountStatus account={account} />
@@ -94,26 +93,25 @@ export default function Wizard() {
                 onClick={login}
                 disabled={busy !== null}
               >
-                {busy === "login" ? "Жду вход в Яндекс…" : "Войти в Яндекс"}
+                {busy === "login" ? t("wiz.loggingIn") : t("wiz.login")}
               </Button>
             </div>
             <p className="wizard-note" style={{ marginTop: 10 }}>
-              Откроется окно Яндекса. Войдите в аккаунт — окно закроется само, токен
-              подставится.
+              {t("wiz.loginHint")}
             </p>
 
             <div className="wizard-divider">
-              <span>или</span>
+              <span>{t("wiz.or")}</span>
             </div>
 
             {manual ? (
               <>
                 <TextField
-                  label="Токен Яндекс.Музыки"
+                  label={t("wiz.tokenLabel")}
                   value={token}
                   type="password"
                   icon="key"
-                  placeholder="Вставьте токен (OAuth)"
+                  placeholder={t("wiz.tokenPlaceholder")}
                   onChange={(value) => {
                     setToken(value);
                     setError("");
@@ -135,11 +133,11 @@ export default function Wizard() {
                           setError("");
                         }
                       } catch {
-                        setError("Буфер обмена недоступен — вставьте токен вручную.");
+                        setError(t("wiz.clipboardBlocked"));
                       }
                     }}
                   >
-                    Вставить из буфера
+                    {t("wiz.paste")}
                   </Button>
                   <Button
                     variant="text"
@@ -147,7 +145,7 @@ export default function Wizard() {
                     icon="open_in_new"
                     onClick={() => openUrl(TOKEN_HELP).catch(() => undefined)}
                   >
-                    Где взять токен
+                    {t("wiz.whereToken")}
                   </Button>
                 </div>
                 <div style={{ marginTop: 14 }}>
@@ -158,7 +156,7 @@ export default function Wizard() {
                     onClick={verify}
                     disabled={busy !== null}
                   >
-                    {busy === "check" ? "Проверяю…" : "Проверить токен"}
+                    {busy === "check" ? t("wiz.verifying") : t("wiz.verify")}
                   </Button>
                 </div>
                 {error ? <p className="wizard-error">{error}</p> : null}
@@ -171,7 +169,7 @@ export default function Wizard() {
                 onClick={() => setManual(true)}
                 disabled={busy !== null}
               >
-                У меня уже есть токен
+                {t("wiz.haveToken")}
               </Button>
             )}
             {!manual && error ? <p className="wizard-error">{error}</p> : null}
@@ -181,45 +179,46 @@ export default function Wizard() {
         {account ? (
           <div style={{ marginTop: 22 }}>
             <Button block size="large" icon="arrow_forward" onClick={proceed}>
-              Продолжить
+              {t("wiz.continue")}
             </Button>
           </div>
         ) : null}
 
-        <p className="wizard-note">
-          Токен хранится локально, рядом с программой, и никуда не отправляется.
-        </p>
+        <p className="wizard-note">{t("wiz.tokenStored")}</p>
       </div>
     </div>
   );
 }
 
 function AccountStatus({ account }: { account: AccountInfo }) {
+  const t = useT();
   const lossless = account.losslessOk;
   return (
     <div className="status-card">
       <div className="status-row">
-        <span className="key">Аккаунт</span>
-        <span className="value">
-          {account.name || account.login || "—"} · UID {account.uid}
-        </span>
+        <span className="key">{t("wiz.account")}</span>
+        <span className="value">{account.name || account.login || "—"}</span>
         <Badge tone="primary" icon="check_circle">
-          вошёл
+          {t("wiz.loggedIn")}
         </Badge>
       </div>
       <div className="status-row">
-        <span className="key">Подписка</span>
-        <span className="value">{account.hasPlus ? "Яндекс Плюс активен" : "Плюс не активен"}</span>
-        <Badge tone={account.hasPlus ? "success" : "error"}>{account.hasPlus ? "Plus" : "нет"}</Badge>
+        <span className="key">{t("wiz.subscription")}</span>
+        <span className="value">
+          {account.hasPlus ? t("wiz.plusActive") : t("wiz.plusInactive")}
+        </span>
+        <Badge tone={account.hasPlus ? "success" : "error"}>
+          {account.hasPlus ? "Plus" : "—"}
+        </Badge>
       </div>
       <div className="status-row">
-        <span className="key">Lossless</span>
+        <span className="key">{t("wiz.lossless")}</span>
         <span className="value">
           {lossless === null
-            ? "не удалось проверить"
+            ? t("wiz.losslessUnchecked")
             : lossless
-              ? "доступен — сервер отдаёт FLAC"
-              : `сервер отдаёт ${account.probeCodec || "AAC"}${
+              ? t("wiz.losslessAvailable")
+              : `${t("wiz.serverGives")} ${account.probeCodec || "AAC"}${
                   account.probeBitrate ? ` ${account.probeBitrate} kbps` : ""
                 }`}
         </span>
@@ -231,17 +230,14 @@ function AccountStatus({ account }: { account: AccountInfo }) {
         </Badge>
       </div>
       {lossless === false ? (
-        <p className="md-body-sm muted" style={{ margin: 0 }}>
-          Проверка на реальном треке: API вернул не FLAC. Скачивание пойдёт в лучшем доступном
-          качестве, файлы останутся .m4a. Обычно это значит, что музыкальная подписка не
-          применяется к аккаунту.
-        </p>
+        <div className="wizard-explain">
+          <div className="wizard-explain-title">{t("wiz.noFlacTitle")}</div>
+          <p>{t("wiz.noFlacBody")}</p>
+          <p>{t("wiz.noFlacHow")}</p>
+          <p className="muted">{t("wiz.noFlacNote")}</p>
+        </div>
       ) : null}
-      {account.note ? (
-        <p className="md-body-sm muted" style={{ margin: 0 }}>
-          {account.note}
-        </p>
-      ) : null}
+      {account.note ? <p className="wizard-note">{account.note}</p> : null}
     </div>
   );
 }

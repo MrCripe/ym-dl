@@ -92,27 +92,18 @@ jobs:
           releaseBody: |
             Загрузчик Яндекс.Музыки с интерфейсом на Material Design 3.
 
-            **Что нового — в [CHANGELOG.md](https://github.com/MrCripe/ym-dl/blob/master/CHANGELOG.md).**
-
-            **Windows** — `.msi` (установщик), `_x64-setup.exe` (NSIS) или
-            `_windows-portable.zip` — распакованная программа, просто запустить
-            `ym-dl.exe`, ничего не устанавливая.
-            **Linux** — `.AppImage` (сделайте файл исполняемым и запустите),
-            `.deb` или `_linux-portable.tar.gz` — распакованная программа.
-
-            Установленное приложение обновляется само: «Настройки → Обновления →
-            Обновить», переустанавливать вручную не нужно.
-
-            Приложение портативное: настройки и профиль лежат в папке
-            `ym-dl-data` рядом с исполняемым файлом, а токен — в системном
-            хранилище паролей.
+            Что нового и какие файлы скачивать — смотрите в описании релиза
+            (заполняется автоматически из CHANGELOG.md).
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
 
-      # A plain archive with the already-built binary, for anyone who does not want
-      # an installer. Windows needs nothing extra; the Linux binary uses the
-      # system's WebKitGTK, which the .deb pulls in as a dependency.
+      # A plain archive with the already-built program, for anyone who does not
+      # want an installer.
+      #
+      # On Linux the archive holds the AppImage, not the bare binary: the binary
+      # needs the distribution's WebKitGTK and GTK installed, while the AppImage
+      # carries them inside, so "unpack and run" is actually true there.
       - name: Portable archive
         if: matrix.platform == 'windows-latest'
         shell: pwsh
@@ -130,9 +121,10 @@ jobs:
 
           Запустите ym-dl.exe. Устанавливать ничего не нужно.
 
-          Рядом с exe появится папка ym-dl-data: в ней настройки, токен и профиль
-          окна. Чтобы перенести программу на другой компьютер, скопируйте всю
-          папку целиком.
+          Рядом с exe появится папка ym-dl-data: в ней настройки и профиль окна.
+          Чтобы перенести программу на другой компьютер, скопируйте всю папку
+          целиком. Токен хранится в системном хранилище паролей Windows, а не в
+          этой папке.
 
           Нужен установленный WebView2 — он есть в Windows 10 и 11 по умолчанию.
           Если окно не открывается, поставьте "Evergreen WebView2 Runtime" от
@@ -153,23 +145,29 @@ jobs:
           version="${TAG#v}"
           stage="portable-linux"
           mkdir -p "$stage"
-          cp "src-tauri/target/release/ym-dl" "$stage/"
+          appimage=$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -1)
+          cp "$appimage" "$stage/ym-dl.AppImage"
+          chmod +x "$stage/ym-dl.AppImage"
           cat > "$stage/README.txt" <<EOF
           ym-dl $version — портативная сборка для Linux
           ==============================================
 
-          Распакуйте архив и запустите ./ym-dl. Устанавливать ничего не нужно.
+          Распакуйте архив и запустите ./ym-dl.AppImage. Устанавливать ничего не
+          нужно: нужные библиотеки (GTK, WebKitGTK) уже внутри.
 
-          Рядом с бинарником появится папка ym-dl-data: в ней настройки, токен и
-          профиль окна. Чтобы перенести программу на другой компьютер, скопируйте
-          всю папку целиком.
+          Если система не разрешает запуск AppImage, включите FUSE:
+            Arch:   sudo pacman -S fuse2
+            Fedora: sudo dnf install fuse
+            Ubuntu: sudo apt install libfuse2
+          Либо распакуйте AppImage и запустите содержимое напрямую:
+            ./ym-dl.AppImage --appimage-extract
+            ./squashfs-root/AppRun
 
-          Нужны системные библиотеки (в Ubuntu/Debian):
-            sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0
+          Настройки лежат в папке ym-dl-data рядом с программой. Токен хранится
+          в системном хранилище паролей (Secret Service / GNOME Keyring).
 
           Без ffmpeg программа скачивает .m4a; чтобы получать FLAC, установите
-          ffmpeg:
-            sudo apt install ffmpeg
+          ffmpeg из репозитория вашего дистрибутива.
           EOF
           tar -czf "ym-dl_${version}_linux-portable.tar.gz" -C "$stage" .
           gh release upload "$TAG" "ym-dl_${version}_linux-portable.tar.gz" --clobber

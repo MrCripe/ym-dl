@@ -66,7 +66,7 @@ impl Client {
         if self.tries == 0 {
             MAX_ATTEMPTS
         } else {
-            self.tries.min(MAX_ATTEMPTS).max(1)
+            self.tries.clamp(1, MAX_ATTEMPTS)
         }
     }
 
@@ -470,8 +470,6 @@ pub fn parse_link(text: &str) -> Result<LinkKind> {
             Some(slash) => rest[slash..].split(['?', '#']).next().unwrap_or("").to_string(),
             None => String::new(),
         }
-    } else if raw.starts_with('/') {
-        raw.split(['?', '#']).next().unwrap_or("").to_string()
     } else {
         raw.split(['?', '#']).next().unwrap_or("").to_string()
     };

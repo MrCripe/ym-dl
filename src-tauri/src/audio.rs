@@ -31,7 +31,7 @@ pub fn decrypt(mut data: Vec<u8>, key_hex: &str) -> anyhow::Result<Vec<u8>> {
 
 fn hex_to_bytes(text: &str) -> anyhow::Result<Vec<u8>> {
     let trimmed = text.trim();
-    if trimmed.len() % 2 != 0 {
+    if !trimmed.len().is_multiple_of(2) {
         anyhow::bail!("ключ расшифровки нечётной длины");
     }
     (0..trimmed.len())
@@ -329,6 +329,99 @@ fn write_tags_ffmpeg(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()
     }
     std::fs::rename(&output, path)?;
     Ok(())
+}
+
+/// Writes only the lyrics tag into a file that is already tagged, leaving every
+/// other field alone.
+///
+/// The lrclib lookup runs as one pass after the downloads finish, so the files are
+/// already written and tagged by then. Re-running the full tag pass would re-mux
+/// every file and re-download covers for nothing.
+pub fn write_lyrics(path: &Path, text: &str) -> anyhow::Result<()> {
+    let is_mp4 = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "m4a" | "mp4" | "m4b"))
+        .unwrap_or(false);
+    if is_mp4 {
+        if !crate::ffmpeg::available() {
+            anyhow::bail!("для тегов MP4 нужен ffmpeg");
+        }
+        return write_lyrics_ffmpeg(path, text);
+    }
+    write_lyrics_lofty(path, text)
+}
+
+fn write_lyrics_ffmpeg(path: &Path, text: &str) -> anyhow::Result<()> {
+    use std::process::Command;
+    let ffmpeg = crate::ffmpeg::ffmpeg_path().ok_or_else(|| anyhow::anyhow!("ffmpeg не найден"))?;
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_else(|| "track".into());
+    let output = path.with_file_name(format!(".{stem}.lyrics.m4a"));
+    let mut command = Command::new(&ffmpeg);
+    command.args(["-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-i"]);
+    command.arg(path);
+    // `-map 0` keeps the embedded cover; `-map_metadata 0` keeps the other tags.
+    command.args(["-map", "0", "-c", "copy", "-map_metadata", "0"]);
+    command.args(["-f", "mp4", "-metadata"]).arg(format!("lyrics={text}"));
+    command.arg(&output);
+    let run = crate::ffmpeg::hidden(&mut command)
+        .output()
+        .map_err(|error| anyhow::anyhow!("ffmpeg не запустился: {error}"))?;
+    if !run.status.success() || !output.is_file() {
+        let _ = std::fs::remove_file(&output);
+        anyhow::bail!(
+            "ffmpeg не записал текст: {}",
+            String::from_utf8_lossy(&run.stderr).trim()
+        );
+    }
+    if !crate::ffmpeg::decodes(&output) {
+        let _ = std::fs::remove_file(&output);
+        anyhow::bail!("файл после записи текста перестал читаться");
+    }
+    std::fs::rename(&output, path)?;
+    Ok(())
+}
+
+fn write_lyrics_lofty(path: &Path, text: &str) -> anyhow::Result<()> {
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| format!(".{ext}"))
+        .unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_else(|| "track".into());
+    let scratch = path.with_file_name(format!(".{stem}.lyrics{extension}"));
+    std::fs::copy(path, &scratch)?;
+    let result = (|| -> anyhow::Result<()> {
+        let mut tagged = open_tagged(&scratch)?;
+        let tag_type = tagged.primary_tag_type();
+        if tagged.primary_tag().is_none() {
+            tagged.insert_tag(Tag::new(tag_type));
+        }
+        let tag = tagged.primary_tag_mut().expect("tag just ensured");
+        tag.insert_text(ItemKey::Lyrics, text.to_string());
+        tagged.save_to_path(&scratch, WriteOptions::default())?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            if crate::ffmpeg::available() && !crate::ffmpeg::decodes(&scratch) {
+                let _ = std::fs::remove_file(&scratch);
+                anyhow::bail!("файл после записи текста перестал читаться");
+            }
+            std::fs::rename(&scratch, path)?;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&scratch);
+            Err(error)
+        }
+    }
 }
 
 fn write_tags_lofty(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()> {
