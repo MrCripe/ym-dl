@@ -20,3 +20,6 @@ archive/
 
 # Stray files must not reach the repository.
 .tmp-*
+
+# Working notes, not part of the published project.
+*.local.md
