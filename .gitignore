@@ -3,6 +3,7 @@ dist/
 .venv/
 .wvdata/
 src-tauri/target/
+src-tauri/target-gnu/
 src-tauri/gen/
 tools/msr*.ttf
 tools/*.log
@@ -23,3 +24,7 @@ archive/
 
 # Working notes, not part of the published project.
 *.local.md
+
+# Raw window captures for tools/make_renders.py. They show the signed-in account
+# name, which the renders blur out; only the finished renders are published.
+docs/raw/

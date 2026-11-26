@@ -8,10 +8,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Folder name an older build moved replaced `.m4a` files into. Only skipped, so
-/// those backups are never converted or deleted.
-pub const BACKUP_DIR: &str = "_old_m4a";
-
 #[cfg(windows)]
 pub(crate) fn hidden(command: &mut Command) -> &mut Command {
     use std::os::windows::process::CommandExt;
@@ -153,71 +149,6 @@ pub fn codec_of(path: &Path) -> String {
 /// decoded end to end.
 pub fn drop_source(path: &Path) -> bool {
     std::fs::remove_file(path).is_ok()
-}
-
-#[derive(Debug, Default, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PostProcessStats {
-    pub converted: usize,
-    pub failed: usize,
-}
-
-/// Walks `root` once and extracts FLAC from every `.m4a` that holds one.
-pub fn post_process(root: &Path) -> PostProcessStats {
-    let mut stats = PostProcessStats::default();
-    if !root.is_dir() {
-        return stats;
-    }
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                // An older build kept the replaced `.m4a` here. Walking into it
-                // would convert and then delete those backups as if they were
-                // leftovers.
-                if path.file_name().map(|name| name == BACKUP_DIR).unwrap_or(false) {
-                    continue;
-                }
-                stack.push(path);
-                continue;
-            }
-            let extension = path
-                .extension()
-                .map(|value| value.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
-            // Only `.m4a` can hide a FLAC stream; `.mp3` and `.flac` are already
-            // in their final form.
-            if extension != "m4a" {
-                continue;
-            }
-            // An interrupted download leaves `.name.part.m4a` behind. It carries
-            // the real extension, so it would otherwise be converted and kept as
-            // if it were a finished track.
-            let is_partial = path
-                .file_name()
-                .map(|name| name.to_string_lossy().contains(".part."))
-                .unwrap_or(false);
-            if is_partial {
-                continue;
-            }
-            if codec_of(&path) != "flac" {
-                continue;
-            }
-            match extract_flac(&path).as_str() {
-                "converted" => {
-                    stats.converted += 1;
-                    drop_source(&path);
-                }
-                "exists" => {
-                    drop_source(&path);
-                }
-                _ => stats.failed += 1,
-            }
-        }
-    }
-    stats
 }
 
 #[cfg(test)]

@@ -29,7 +29,7 @@ impl AppState {
         }
     }
 
-    fn settings(&self) -> Settings {
+    pub fn settings(&self) -> Settings {
         self.settings.lock().expect("settings lock").clone()
     }
 
@@ -64,7 +64,11 @@ pub fn get_settings(state: State<'_, AppState>) -> Settings {
 }
 
 #[tauri::command]
-pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<Settings, String> {
+pub fn save_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: Settings,
+) -> Result<Settings, String> {
     let mut sanitized = settings;
     sanitized.sanitize();
     // The lock is held across the write so an autosave and the username fill-in
@@ -76,6 +80,9 @@ pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<S
         *slot = sanitized.clone();
     }
     state.reset_client();
+    // A new download folder must also become readable for playback, or every
+    // track in the library suddenly refuses to play.
+    crate::grant_audio_scope(&app);
     Ok(sanitized)
 }
 
@@ -257,7 +264,7 @@ pub async fn resolve_source(
     // An artist link fetches one album at a time, which takes minutes on a big
     // catalogue; the UI needs to see that it is moving, not frozen.
     let progress_app = app.clone();
-    api::resolve_source(
+    let mut info = api::resolve_source(
         &client,
         &url,
         settings.only_music,
@@ -271,7 +278,51 @@ pub async fn resolve_source(
         },
     )
     .await
-    .map_err(|error| format!("{error:#}"))
+    .map_err(|error| format!("{error:#}"))?;
+
+    // Preview before download: the cover, the year and what quality the service
+    // actually answers for this account. One extra request per resolve is worth
+    // it — otherwise the first sign of a problem is a finished download.
+    if let Some(first) = info.tracks.first().cloned() {
+        info.year = first.year;
+        if let Ok(fresh) = client.tracks(std::slice::from_ref(&first.id)).await {
+            if let Some(track) = fresh.first() {
+                let uri = track
+                    .albums
+                    .first()
+                    .and_then(|album| album.cover_uri.clone())
+                    .or_else(|| track.cover_uri.clone());
+                if let Some(uri) = uri {
+                    if let Ok(bytes) = client.cover(&uri, "200x200").await {
+                        info.cover = Some(crate::image::data_url(&bytes));
+                    }
+                }
+                if let Ok(details) = client.download_info(&first.id, "lossless").await {
+                    info.quality = details.codec;
+                }
+            }
+        }
+    }
+    Ok(info)
+}
+
+/// Catalogue search, grouped the way the results screen shows it.
+#[tauri::command]
+pub async fn search_music(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<SearchResults, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(SearchResults::default());
+    }
+    let client = state.client().map_err(|error| format!("{error:#}"))?;
+    // Four tracks per section fill the two columns the results screen uses, plus
+    // one row of each shelf; the cover cap covers all of them.
+    client
+        .search(trimmed, 8, 8 + 6 + 6 + 6)
+        .await
+        .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
@@ -287,9 +338,15 @@ pub async fn load_likes(state: State<'_, AppState>) -> Result<SourceInfo, String
 pub fn start_download(
     app: AppHandle,
     state: State<'_, AppState>,
-    track_ids: Vec<String>,
+    batches: Vec<crate::download::Batch>,
 ) -> Result<(), String> {
-    if track_ids.is_empty() {
+    // The queue and the current selection arrive together: the user adds
+    // everything first, then presses one button.
+    let batches: Vec<crate::download::Batch> = batches
+        .into_iter()
+        .filter(|batch| !batch.track_ids.is_empty())
+        .collect();
+    if batches.is_empty() {
         return Err("Ничего не выбрано.".into());
     }
     if state.running.swap(true, Ordering::SeqCst) {
@@ -309,7 +366,7 @@ pub fn start_download(
     let settings = state.settings();
     let running = app.clone();
     tauri::async_runtime::spawn(async move {
-        let job = Job::new(app.clone(), client, settings, control, track_ids);
+        let job = Job::new(app.clone(), client, settings, control, batches);
         if let Err(error) = job.run().await {
             let _ = tauri::Emitter::emit(
                 &app,
@@ -384,49 +441,23 @@ pub fn environment() -> EnvironmentInfo {
     }
 }
 
-#[tauri::command]
-pub async fn post_process(state: State<'_, AppState>) -> Result<ffmpeg::PostProcessStats, String> {
-    let settings = state.settings();
-    let dir = settings.target_dir();
-    if !ffmpeg::available() {
-        return Err("Нужны ffmpeg и ffprobe.".into());
-    }
-    tauri::async_runtime::spawn_blocking(move || ffmpeg::post_process(&dir))
-        .await
-        .map_err(|error| format!("{error}"))
-}
-
 /// Opens the download folder in the system file manager.
 ///
 /// Called from Rust rather than from the frontend: a path opened through the
 /// webview would need a permission scope listing every possible folder, while the
 /// backend already knows the configured one.
 ///
-/// The file manager is started directly instead of through the opener plugin,
-/// which asked the shell for an association and on Windows answered a valid
-/// folder with "Windows cannot access the specified path".
+/// The opener plugin's `open_path` goes through `ShellExecute`, which is what a
+/// double click does. Starting `explorer.exe` by hand looked equivalent and was
+/// not: on a machine where the shell is already running, the second copy fails to
+/// initialise its DLLs and Windows shows a 0xc0000142 error box instead of the
+/// folder.
 #[tauri::command]
 pub fn open_download_dir(state: State<'_, AppState>) -> Result<(), String> {
     let dir = state.settings().target_dir();
     std::fs::create_dir_all(&dir).map_err(|error| format!("не удалось создать папку: {error}"))?;
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = std::process::Command::new("explorer");
-        command.arg(&dir);
-        command
-    };
-    #[cfg(target_os = "linux")]
-    let mut command = {
-        let mut command = std::process::Command::new("xdg-open");
-        command.arg(&dir);
-        command
-    };
-    // Not wrapped in `hidden()`: the file manager is a GUI program, and starting it
-    // with CREATE_NO_WINDOW made it exit immediately without opening a window.
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("не удалось открыть папку: {error}"))
+    tauri_plugin_opener::open_path(&dir, None::<&str>)
+        .map_err(|error| format!("не удалось открыть папку {}: {error}", dir.display()))
 }
 
 #[tauri::command]
@@ -463,4 +494,226 @@ mod login_tests {
         assert!(token_from_url("https://x/#access_token=short").is_none());
         assert!(token_from_url("https://x/#access_token=/bad/path/aaaaaaaaaaaaaaaaaaaaaaaaaaaa").is_none());
     }
+}
+
+// --- library --------------------------------------------------------------
+
+/// Everything already downloaded, ordered and optionally filtered.
+#[tauri::command]
+pub async fn library_list(
+    sort: String,
+    descending: bool,
+    filter: String,
+) -> Result<Vec<crate::library::LibraryTrack>, String> {
+    // Async so the work leaves the window thread: a synchronous command runs
+    // inside the IPC handler, and opening SQLite there stalls the interface.
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::library::list(&sort, descending, &filter).map_err(|error| format!("{error:#}"))
+    })
+    .await
+    .map_err(|error| format!("{error}"))?
+}
+
+/// Applies edited tags to the file first and to the registry second.
+///
+/// The file is the source of truth: if writing it fails the row must not claim a
+/// change that never reached disk.
+#[tauri::command]
+pub async fn library_update(
+    state: State<'_, AppState>,
+    id: i64,
+    patch: crate::library::TagPatch,
+) -> Result<crate::library::LibraryTrack, String> {
+    let level = state.settings().compatibility_level;
+    // Rewriting a tag copies the file and may run ffmpeg for an MP4 container.
+    tauri::async_runtime::spawn_blocking(move || update_tags_of(id, &patch, level))
+        .await
+        .map_err(|error| format!("{error}"))?
+}
+
+fn update_tags_of(
+    id: i64,
+    patch: &crate::library::TagPatch,
+    compatibility_level: u8,
+) -> Result<crate::library::LibraryTrack, String> {
+    let entry = crate::library::get(id)
+        .map_err(|error| format!("{error:#}"))?
+        .ok_or_else(|| "запись не найдена".to_string())?;
+    let path = std::path::PathBuf::from(&entry.path);
+    if !path.is_file() {
+        return Err(format!("файл не найден: {}", path.display()));
+    }
+
+    let current = crate::audio::read_file_metadata(&path).map_err(|error| format!("{error:#}"))?;
+    let pick = |next: &Option<String>, previous: &str| {
+        next.clone().unwrap_or_else(|| previous.to_string())
+    };
+    let patch = patch.clone();
+    let payload = crate::audio::TagPayload {
+        title: pick(&patch.title, &current.title),
+        artist: vec![pick(&patch.artist, &current.artist)],
+        album_artist: vec![pick(&patch.album_artist, &current.album_artist)],
+        album: pick(&patch.album, &current.album),
+        year: patch.year.or(current.year),
+        track_number: patch.track_number.or(current.track_number),
+        disc_number: patch.disc_number.or(current.disc_number),
+        genre: Some(pick(&patch.genre, &current.genre)),
+        isrc: Some(current.isrc.clone()).filter(|code| !code.is_empty()),
+        // Carried over from the file: a tag rewrite must not drop them.
+        cover: crate::audio::read_cover(&path),
+        lyrics: Some(current.lyrics.clone()).filter(|text| !text.is_empty()),
+        url: current.comment.clone(),
+        compatibility_level,
+        _marker: std::marker::PhantomData,
+    };
+    crate::audio::write_tags(&path, &payload).map_err(|error| format!("{error:#}"))?;
+
+    let updated = crate::library::update_metadata(id, &patch)
+        .map_err(|error| format!("{error:#}"))?
+        .ok_or_else(|| "запись не найдена".to_string())?;
+    Ok(updated)
+}
+
+/// Deletes the audio file, its `.lrc` sidecar and the registry row.
+///
+/// The file goes first: dropping the row before the file is gone leaves an
+/// orphan the user cannot remove again, because the interface only knows rows.
+#[tauri::command]
+pub async fn library_delete(id: i64) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || delete_file_of(id))
+        .await
+        .map_err(|error| format!("{error}"))?
+}
+
+fn delete_file_of(id: i64) -> Result<String, String> {
+    let entry = crate::library::get(id)
+        .map_err(|error| format!("{error:#}"))?
+        .ok_or_else(|| "запись не найдена".to_string())?;
+    let path = std::path::PathBuf::from(&entry.path);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        // Already gone: the row is stale, which is exactly what we want to clear.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("не удалось удалить файл: {error}")),
+    }
+    let _ = std::fs::remove_file(path.with_extension("lrc"));
+    crate::library::forget(id).map_err(|error| format!("{error:#}"))?;
+    Ok(entry.path)
+}
+
+/// Rebuilds the index from the download folder.
+#[tauri::command]
+pub async fn library_scan(state: State<'_, AppState>) -> Result<crate::library::ScanReport, String> {
+    // Walking the folder reads every file's tags; on the window thread that is a
+    // visible freeze.
+    let root = state.settings().target_dir();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::library::scan(&root).map_err(|error| format!("{error:#}"))
+    })
+    .await
+    .map_err(|error| format!("{error}"))?
+}
+
+/// Re-downloads one track at the best quality the account is offered.
+#[tauri::command]
+pub async fn library_upgrade(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<crate::download::UpgradeOutcome, String> {
+    let entry = crate::library::get(id)
+        .map_err(|error| format!("{error:#}"))?
+        .ok_or_else(|| "запись не найдена".to_string())?;
+    let client = state.client().map_err(|error| format!("{error:#}"))?;
+    let settings = state.settings();
+    crate::download::upgrade_track(&client, &settings, &entry)
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// The embedded cover of one library file, as a data URL.
+///
+/// Read lazily per row instead of shipping 50 images with the list: only the
+/// visible rows ask, and the frontend keeps the answer for the session.
+#[tauri::command]
+pub async fn library_cover(id: i64) -> Result<Option<String>, String> {
+    // Called once per visible row, and each call parses a whole tag block: the
+    // one command that must never run on the window thread.
+    tauri::async_runtime::spawn_blocking(move || cover_of(id))
+        .await
+        .map_err(|error| format!("{error}"))?
+}
+
+fn cover_of(id: i64) -> Result<Option<String>, String> {
+    let entry = crate::library::get(id)
+        .map_err(|error| format!("{error:#}"))?
+        .ok_or_else(|| "запись не найдена".to_string())?;
+    let path = std::path::PathBuf::from(&entry.path);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    Ok(crate::audio::read_cover(&path).map(|bytes| crate::image::data_url(&bytes)))
+}
+
+/// Replaces the embedded cover with the image at `path`.
+#[tauri::command]
+pub async fn library_set_cover(
+    state: State<'_, AppState>,
+    id: i64,
+    path: String,
+) -> Result<(), String> {
+    let level = state.settings().compatibility_level;
+    // Copying the file and running ffmpeg is not work for the window thread.
+    tauri::async_runtime::spawn_blocking(move || set_cover_of(id, &path, level))
+        .await
+        .map_err(|error| format!("{error}"))?
+}
+
+fn set_cover_of(id: i64, path: &str, compatibility_level: u8) -> Result<(), String> {
+    let entry = crate::library::get(id)
+        .map_err(|error| format!("{error:#}"))?
+        .ok_or_else(|| "запись не найдена".to_string())?;
+    let file = std::path::PathBuf::from(&entry.path);
+    if !file.is_file() {
+        return Err(format!("файл не найден: {}", file.display()));
+    }
+    // The size is checked before reading: a path chosen by mistake (an ISO, a
+    // video) must not be loaded into memory first and rejected afterwards.
+    let size = std::fs::metadata(path)
+        .map_err(|error| format!("не удалось прочитать картинку: {error}"))?
+        .len();
+    if size > 12 * 1024 * 1024 {
+        return Err("картинка больше 12 МБ".to_string());
+    }
+    let image = std::fs::read(path)
+        .map_err(|error| format!("не удалось прочитать картинку: {error}"))?;
+    // Anything that is not a picture would be stored as a broken cover and shown
+    // back through `library_cover`, so the format is checked by its magic bytes.
+    let is_picture = image.starts_with(&[0x89, b'P', b'N', b'G'])
+        || image.starts_with(&[0xFF, 0xD8])
+        || image.starts_with(b"GIF8")
+        || (image.starts_with(b"RIFF") && image.get(8..12) == Some(b"WEBP"));
+    if !is_picture {
+        return Err("это не картинка: нужен PNG, JPEG, GIF или WebP".to_string());
+    }
+
+    // Everything else in the tag is read back from the file and written again:
+    // the tag block is replaced as a whole, so an unread field would be lost.
+    let current = crate::audio::read_file_metadata(&file).map_err(|error| format!("{error:#}"))?;
+    let payload = crate::audio::TagPayload {
+        title: current.title,
+        artist: vec![current.artist],
+        album_artist: vec![current.album_artist],
+        album: current.album,
+        year: current.year,
+        track_number: current.track_number,
+        disc_number: current.disc_number,
+        genre: Some(current.genre),
+        isrc: Some(current.isrc).filter(|code| !code.is_empty()),
+        cover: Some(image),
+        lyrics: Some(current.lyrics).filter(|text| !text.is_empty()),
+        url: current.comment,
+        compatibility_level,
+        _marker: std::marker::PhantomData,
+    };
+    crate::audio::write_tags(&file, &payload).map_err(|error| format!("{error:#}"))
 }

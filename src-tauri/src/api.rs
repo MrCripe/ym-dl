@@ -186,6 +186,24 @@ impl Client {
         self.get(&format!("/albums/{id}/with-tracks"), &[]).await
     }
 
+    /// One page of an artist's own tracks.
+    ///
+    /// The search screen uses this: a name typed into the box is a request for
+    /// that artist's songs, and the catalogue answers with the artist card plus a
+    /// handful of tracks, which reads as "the search did not work".
+    pub async fn artist_tracks(&self, id: &str, limit: usize) -> Result<Vec<Track>> {
+        let page: ArtistTracks = self
+            .get(
+                &format!("/artists/{id}/tracks"),
+                &[
+                    ("page", "0".to_string()),
+                    ("page-size", limit.max(1).to_string()),
+                ],
+            )
+            .await?;
+        Ok(page.tracks)
+    }
+
     pub async fn artist_albums(&self, id: &str, page: u32) -> Result<ArtistAlbums> {
         self.get(
             &format!("/artists/{id}/direct-albums"),
@@ -250,6 +268,202 @@ impl Client {
             Some(url) => Ok(self.http.get(url).send().await?.text().await?),
             None => bail!("текст песни недоступен"),
         }
+    }
+
+    /// Searches the catalogue and returns the four sections the reference client
+    /// shows: tracks, artists, albums, playlists.
+    ///
+    /// Covers are resolved here, inline, because the result list is what the user
+    /// is looking at: a shelf of grey squares that fill in one by one reads as
+    /// broken. `cover_limit` caps how many are fetched — the visible rows only.
+    pub async fn search(
+        &self,
+        text: &str,
+        limit: usize,
+        cover_limit: usize,
+    ) -> Result<SearchResults> {
+        let response: SearchPayload = self
+            .get(
+                "/search",
+                &[
+                    ("text", text.to_string()),
+                    ("type", "all".into()),
+                    ("page", "0".into()),
+                    ("nocorrect", "false".into()),
+                ],
+            )
+            .await?;
+
+        let mut results = SearchResults::default();
+        // Cover URIs are collected while the rows are built, then fetched in one
+        // pass so the ordering stays obvious.
+        let mut pending: Vec<(CoverTarget, String)> = Vec::new();
+
+        // A name typed into the box is a request for that artist's songs. The
+        // catalogue answers it with the artist card and a few tracks, so the
+        // artist's own list goes in front; the rest of the catalogue follows.
+        let mut catalogue: Vec<Track> = Vec::new();
+        if let Some(artist) = response
+            .artists
+            .results
+            .iter()
+            .find(|artist| same_name(text, &artist.name))
+        {
+            if let Some(id) = value_to_id(&artist.id) {
+                match self.artist_tracks(&id, limit).await {
+                    Ok(tracks) => catalogue.extend(tracks),
+                    // The artist shelf is still worth showing, so a failed extra
+                    // call degrades to plain search results instead of an error.
+                    Err(error) => crate::startup_log::write(&format!(
+                        "[warn] треки исполнителя не получены: {error:#}"
+                    )),
+                }
+            }
+        }
+        catalogue.extend(response.tracks.results);
+
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for track in catalogue {
+            if results.tracks.len() >= limit {
+                break;
+            }
+            let Some(track_id) = value_to_id(&track.id) else {
+                continue;
+            };
+            // The artist list and the search list overlap heavily; one row each.
+            if !seen.insert(track_id.clone()) {
+                continue;
+            }
+            let album = track.albums.first();
+            let album_id = album
+                .and_then(|album| value_to_id(&album.id))
+                .unwrap_or_default();
+            if let Some(uri) = album
+                .and_then(|album| album.cover_uri.clone())
+                .or_else(|| track.cover_uri.clone())
+            {
+                pending.push((CoverTarget::Track(results.tracks.len()), uri));
+            }
+            results.tracks.push(SearchTrack {
+                id: track_id.clone(),
+                title: full_title(&track.title, track.version.as_deref()),
+                artist: artist_line(&track.artists),
+                album: album.map(|album| album.title.clone()).unwrap_or_default(),
+                duration_ms: track.duration_ms.unwrap_or(0),
+                cover: None,
+                link: format!("https://music.yandex.ru/album/{album_id}/track/{track_id}"),
+            });
+        }
+
+        for artist in response.artists.results.into_iter().take(limit) {
+            let Some(id) = value_to_id(&artist.id) else {
+                continue;
+            };
+            // The artist payload sends the picture as a cover object; `coverUri`
+            // is only present on some responses, so both are tried.
+            let uri = artist
+                .cover
+                .as_ref()
+                .and_then(|cover| cover.uri.clone())
+                .or_else(|| artist.cover_uri.clone())
+                .or_else(|| artist.op_image.clone());
+            if let Some(uri) = uri {
+                pending.push((CoverTarget::Artist(results.artists.len()), uri));
+            }
+            results.artists.push(SearchCard {
+                title: artist.name.clone(),
+                subtitle: String::new(),
+                cover: None,
+                link: format!("https://music.yandex.ru/artist/{id}"),
+                round: true,
+            });
+        }
+
+        for album in response.albums.results.into_iter().take(limit) {
+            let Some(id) = value_to_id(&album.id) else {
+                continue;
+            };
+            if let Some(uri) = album.cover_uri.clone() {
+                pending.push((CoverTarget::Album(results.albums.len()), uri));
+            }
+            results.albums.push(SearchCard {
+                title: album.title.clone(),
+                subtitle: artist_line(&album.artists),
+                cover: None,
+                link: format!("https://music.yandex.ru/album/{id}"),
+                round: false,
+            });
+        }
+
+        for playlist in response.playlists.results.into_iter().take(limit) {
+            let Some(kind) = value_to_id(&playlist.kind) else {
+                continue;
+            };
+            let uid = value_to_id(&playlist.uid)
+                .or_else(|| {
+                    playlist
+                        .owner
+                        .as_ref()
+                        .and_then(|owner| value_to_id(&owner.uid))
+                })
+                .unwrap_or_default();
+            // A collage cover has several URIs; the first one is enough for a card.
+            let uri = playlist
+                .cover
+                .as_ref()
+                .and_then(|cover| cover.uri.clone().or_else(|| cover.items_uri.first().cloned()));
+            if let Some(uri) = uri {
+                pending.push((CoverTarget::Playlist(results.playlists.len()), uri));
+            }
+            let owner_name = playlist
+                .owner
+                .as_ref()
+                .and_then(|owner| owner.name.clone().or_else(|| owner.login.clone()))
+                .unwrap_or_default();
+            results.playlists.push(SearchCard {
+                title: playlist.title.clone(),
+                subtitle: format!("{} · {} треков", owner_name, playlist.track_count.unwrap_or(0)),
+                cover: None,
+                link: format!("https://music.yandex.ru/users/{uid}/playlists/{kind}"),
+                round: false,
+            });
+        }
+
+        for (target, uri) in pending.into_iter().take(cover_limit) {
+            // Tracks are small thumbnails, shelves are large cards.
+            let size = match target {
+                CoverTarget::Track(_) => "120x120",
+                _ => "400x400",
+            };
+            let Ok(bytes) = self.cover(&uri, size).await else {
+                continue;
+            };
+            let url = Some(crate::image::data_url(&bytes));
+            match target {
+                CoverTarget::Track(index) => {
+                    if let Some(row) = results.tracks.get_mut(index) {
+                        row.cover = url;
+                    }
+                }
+                CoverTarget::Artist(index) => {
+                    if let Some(row) = results.artists.get_mut(index) {
+                        row.cover = url;
+                    }
+                }
+                CoverTarget::Album(index) => {
+                    if let Some(row) = results.albums.get_mut(index) {
+                        row.cover = url;
+                    }
+                }
+                CoverTarget::Playlist(index) => {
+                    if let Some(row) = results.playlists.get_mut(index) {
+                        row.cover = url;
+                    }
+                }
+            }
+        }
+
+        Ok(results)
     }
 
     pub async fn cover(&self, uri: &str, size: &str) -> Result<Vec<u8>> {
@@ -321,7 +535,9 @@ impl Client {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(0);
-        let mut body: Vec<u8> = Vec::with_capacity(total as usize);
+        // The length comes from the audio server's header: reserving it blindly
+        // would let a wrong or hostile value ask for gigabytes up front.
+        let mut body: Vec<u8> = Vec::with_capacity((total as usize).min(32 * 1024 * 1024));
         // `chunk()` is already on the response; a stream adapter only to call
         // `next()` cost a dependency.
         while let Some(chunk) = response.chunk().await.context("обрыв соединения при загрузке аудио")? {
@@ -383,6 +599,15 @@ pub fn describe_network_error(error: &reqwest::Error) -> String {
 }
 
 // --- account -------------------------------------------------------------
+
+/// Where a fetched cover belongs in the result set.
+#[derive(Debug, Clone, Copy)]
+enum CoverTarget {
+    Track(usize),
+    Artist(usize),
+    Album(usize),
+    Playlist(usize),
+}
 
 pub async fn check_token(client: &Client) -> Result<AccountInfo> {
     let status = client.status().await?;
@@ -522,6 +747,9 @@ pub async fn resolve_source(
                 .ok_or_else(|| anyhow!("Трек не найден или недоступен."))?;
             let item = track_item(&track);
             Ok(SourceInfo {
+                cover: None,
+                year: None,
+                quality: String::new(),
                 kind: "track".into(),
                 title: item.title.clone(),
                 subtitle: item.artist.clone(),
@@ -543,6 +771,9 @@ pub async fn resolve_source(
                 .map(track_item)
                 .collect::<Vec<_>>();
             Ok(SourceInfo {
+                cover: None,
+                year: None,
+                quality: String::new(),
                 kind: "album".into(),
                 title: album.title,
                 subtitle,
@@ -576,6 +807,9 @@ pub async fn resolve_source(
                 .or_else(|| playlist.owner.and_then(|o| o.login.or(o.name)))
                 .unwrap_or_default();
             Ok(SourceInfo {
+                cover: None,
+                year: None,
+                quality: String::new(),
                 kind: "playlist".into(),
                 title: playlist.title,
                 subtitle: format!("{owner_label} · {} треков", tracks.len()),
@@ -611,8 +845,16 @@ pub async fn resolve_source(
                     }
                     album_ids.push(album_id);
                 }
+                // `per_page` is optional in the payload and defaults to 0, which
+                // made this comparison `0 < total` — true forever, so an artist
+                // link could loop on the network until the app was killed.
                 match page_info.pager {
-                    Some(pager) if pager.per_page * (pager.page + 1) < pager.total => page += 1,
+                    Some(pager)
+                        if pager.per_page.max(1) * (pager.page + 1) < pager.total
+                            && page < 500 =>
+                    {
+                        page += 1
+                    }
                     _ => break,
                 }
             }
@@ -624,6 +866,9 @@ pub async fn resolve_source(
                 progress(index + 1, album_ids.len());
             }
             Ok(SourceInfo {
+                cover: None,
+                year: None,
+                quality: String::new(),
                 kind: "artist".into(),
                 title: name,
                 subtitle: format!("{} альбомов · {} треков", album_ids.len(), tracks.len()),
@@ -655,11 +900,30 @@ pub async fn likes_source(
         format!("{} · ", username.trim())
     };
     Ok(SourceInfo {
+        cover: None,
+        year: None,
+        quality: String::new(),
         kind: "likes".into(),
         title: "Мне нравится".into(),
         subtitle: format!("{owner}{} треков", tracks.len()),
         tracks,
     })
+}
+
+/// Whether a typed query names this artist, ignoring case, spaces and punctuation.
+///
+/// Used to decide that the search should answer with the artist's tracks: a
+/// loose `contains` would fire on "кизару" for any artist with that syllable in
+/// the name, so both sides are reduced to letters and digits.
+pub fn same_name(query: &str, name: &str) -> bool {
+    fn key(text: &str) -> String {
+        text.to_lowercase()
+            .chars()
+            .filter(|character| character.is_alphanumeric())
+            .collect()
+    }
+    let wanted = key(query);
+    !wanted.is_empty() && wanted == key(name)
 }
 
 pub fn artist_line(artists: &[Artist]) -> String {
@@ -733,6 +997,17 @@ mod tests {
         ));
         assert!(matches!(parse_link("53404").unwrap(), LinkKind::Track(id) if id == "53404"));
         assert!(parse_link("привет").is_err());
+    }
+
+    /// The artist shortcut fires only when the typed text names the artist:
+    /// case, spacing and punctuation must not matter, a substring must.
+    #[test]
+    fn an_artist_name_matches_regardless_of_case() {
+        assert!(same_name("кизару", "Кизару"));
+        assert!(same_name("KIZARU", "kizaru"));
+        assert!(same_name("twenty one pilots", "Twenty One Pilots"));
+        assert!(!same_name("киза", "Кизару"));
+        assert!(!same_name("", "Кизару"));
     }
 
     #[test]

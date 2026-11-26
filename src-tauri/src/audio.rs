@@ -8,7 +8,7 @@ use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::prelude::{Accessor, ItemKey};
 use lofty::probe::Probe;
-use lofty::tag::{Tag, TagType};
+use lofty::tag::Tag;
 use std::path::{Path, PathBuf};
 
 type Aes128Ctr = ctr::Ctr128BE<Aes128>;
@@ -82,7 +82,27 @@ pub fn base_path(pattern: &str, track: &Track, unsafe_path: bool) -> PathBuf {
     result
         .split(['/', '\\'])
         .filter(|part| !part.trim().is_empty())
-        .fold(PathBuf::new(), |path, part| path.join(trim_name(part)))
+        .fold(PathBuf::new(), |path, part| {
+            path.join(avoid_reserved(&trim_name(part)))
+        })
+}
+
+/// Names Windows reserves for devices, with or without an extension.
+///
+/// A track called "CON" or "NUL" cannot be created there: the write fails with a
+/// message about the device rather than about the name.
+const RESERVED: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+    "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+fn avoid_reserved(name: &str) -> String {
+    let stem = name.split('.').next().unwrap_or(name).trim().to_ascii_uppercase();
+    if RESERVED.contains(&stem.as_str()) {
+        format!("{name}_")
+    } else {
+        name.to_string()
+    }
 }
 
 fn sanitize(value: &str, unsafe_path: bool) -> String {
@@ -141,6 +161,9 @@ pub struct TagPayload<'a> {
     pub track_number: Option<u32>,
     pub disc_number: Option<u32>,
     pub genre: Option<String>,
+    /// International Standard Recording Code, when the service provides one.
+    /// Yandex usually does not, so this stays empty more often than not.
+    pub isrc: Option<String>,
     pub cover: Option<Vec<u8>>,
     pub lyrics: Option<String>,
     pub url: String,
@@ -174,6 +197,7 @@ impl TagPayload<'_> {
             track_number: position.and_then(|p| p.index),
             disc_number: position.and_then(|p| p.volume),
             genre: album.and_then(|a| a.genre.clone()),
+            isrc: track.isrc.clone(),
             cover: None,
             lyrics: None,
             url,
@@ -246,6 +270,9 @@ fn metadata_pairs(payload: &TagPayload<'_>) -> Vec<(String, String)> {
     }
     if let Some(genre) = payload.genre.as_deref() {
         push("genre", genre);
+    }
+    if let Some(isrc) = payload.isrc.as_deref() {
+        push("ISRC", isrc);
     }
     if let Some(lyrics) = payload.lyrics.as_deref() {
         push("lyrics", lyrics);
@@ -502,6 +529,9 @@ fn tag_in_place_lofty(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<(
     if let Some(genre) = payload.genre.clone().filter(|g| !g.is_empty()) {
         tag.set_genre(genre);
     }
+    if let Some(isrc) = payload.isrc.clone().filter(|code| !code.is_empty()) {
+        tag.insert_text(ItemKey::Isrc, isrc);
+    }
     if let Some(lyrics) = payload.lyrics.clone().filter(|l| !l.is_empty()) {
         tag.insert_text(ItemKey::Lyrics, lyrics);
     }
@@ -520,13 +550,102 @@ fn tag_in_place_lofty(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<(
             None,
             cover,
         );
+        // `push_picture` appends, and readers take the first picture as the
+        // cover: without dropping the old one, "change the cover" kept showing
+        // the previous image and grew the file by one picture per save.
+        tag.remove_picture_type(lofty::picture::PictureType::CoverFront);
         tag.push_picture(picture);
-    }
-    if tag_type == TagType::Mp4Ilst {
-        let _ = tag.insert_text(ItemKey::Unknown("aART".into()), payload.album_artist.join("; "));
     }
     tagged.save_to_path(path, WriteOptions::default())?;
     Ok(())
+}
+
+/// What a finished file on disk says about itself.
+///
+/// This is how the library is rebuilt from the folder: the tags written at
+/// download time are the only record left if the database is lost or the user
+/// moves their music somewhere else.
+#[derive(Debug, Clone, Default)]
+pub struct FileMetadata {
+    pub title: String,
+    pub artist: String,
+    pub album_artist: String,
+    pub album: String,
+    pub genre: String,
+    pub isrc: String,
+    pub year: Option<i32>,
+    pub track_number: Option<u32>,
+    pub disc_number: Option<u32>,
+    pub duration_ms: u64,
+    pub codec: String,
+    pub bitrate: u32,
+    /// The Yandex page URL written into the comment, when the file has one.
+    pub comment: String,
+    /// Lyrics already embedded in the file. A quality upgrade rewrites the tags
+    /// and must carry them over, or the new file would lose them.
+    pub lyrics: String,
+}
+
+/// Reads tags and stream properties from an audio file.
+pub fn read_file_metadata(path: &Path) -> anyhow::Result<FileMetadata> {
+    let tagged = open_tagged(path)?;
+    let properties = tagged.properties();
+    let file_type = tagged.file_type();
+    let codec = if format!("{file_type:?}").contains("Flac") {
+        "FLAC".to_string()
+    } else if format!("{file_type:?}").contains("Mpeg") {
+        "MP3".to_string()
+    } else if format!("{file_type:?}").contains("Mp4") {
+        // The container is MP4; whether it holds AAC or FLAC is decided by the
+        // bitrate the library compares later.
+        "AAC".to_string()
+    } else {
+        format!("{file_type:?}")
+    };
+
+    let mut meta = FileMetadata {
+        duration_ms: properties.duration().as_millis() as u64,
+        bitrate: properties.audio_bitrate().unwrap_or(0),
+        codec,
+        ..Default::default()
+    };
+
+    let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
+        return Ok(meta);
+    };
+    let text = |key: ItemKey| tag.get_string(&key).unwrap_or("").to_string();
+    meta.title = text(ItemKey::TrackTitle);
+    meta.artist = text(ItemKey::TrackArtist);
+    meta.album_artist = text(ItemKey::AlbumArtist);
+    meta.album = text(ItemKey::AlbumTitle);
+    meta.genre = text(ItemKey::Genre);
+    meta.isrc = text(ItemKey::Isrc);
+    meta.comment = text(ItemKey::Comment);
+    meta.lyrics = text(ItemKey::Lyrics);
+    meta.year = tag.year().and_then(|year| i32::try_from(year).ok());
+    meta.track_number = tag.track();
+    meta.disc_number = tag.disk();
+    Ok(meta)
+}
+
+/// The embedded cover of a file, if it has one.
+///
+/// Editing a tag rewrites the whole tag block, and for MP4 that pass goes through
+/// ffmpeg, which drops any picture it is not given. Reading it back first is what
+/// keeps a cover from disappearing the moment someone fixes a typo in a title.
+pub fn read_cover(path: &Path) -> Option<Vec<u8>> {
+    let tagged = open_tagged(path).ok()?;
+    let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
+    tag.pictures().first().map(|picture| picture.data().to_vec())
+}
+
+/// The Yandex track id hidden in a page URL, e.g.
+/// `https://music.yandex.ru/album/1/track/42` → `42`.
+pub fn track_id_from_url(url: &str) -> Option<String> {
+    let marker = "/track/";
+    let rest = &url[url.find(marker)? + marker.len()..];
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    (!digits.is_empty()).then_some(digits)
 }
 
 /// Reads back what a finished file actually contains. Used by the live check and
@@ -572,7 +691,13 @@ mod tests {
             version: None,
             available: true,
             duration_ms: Some(231_000),
-            artists: vec![Artist { id: json!(7), name: "The White Stripes".into() }],
+            artists: vec![Artist {
+                id: json!(7),
+                name: "The White Stripes".into(),
+                cover_uri: None,
+                cover: None,
+                op_image: None,
+            }],
             albums: vec![AlbumRef {
                 id: json!(11644078),
                 title: "Elephant".into(),
@@ -581,13 +706,20 @@ mod tests {
                 cover_uri: None,
                 track_position: Some(TrackPosition { volume: Some(1), index: Some(1) }),
                 track_count: Some(14),
-                artists: vec![Artist { id: json!(7), name: "The White Stripes".into() }],
+                artists: vec![Artist {
+                    id: json!(7),
+                    name: "The White Stripes".into(),
+                    cover_uri: None,
+                    cover: None,
+                    op_image: None,
+                }],
                 genre: Some("rock".into()),
                 meta_type: Some("music".into()),
                 available: true,
             }],
             lyrics_info: None,
             cover_uri: None,
+            isrc: None,
         }
     }
 
@@ -687,6 +819,7 @@ mod tag_tests {
             track_number: Some(3),
             disc_number: Some(1),
             genre: Some("rock".into()),
+            isrc: None,
             cover: Some(tiny_png()),
             lyrics: Some("строка текста".into()),
             url: "https://music.yandex.ru/track/1".into(),

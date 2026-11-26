@@ -1,15 +1,19 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useApp, type Page } from "./lib/store";
 import { useT } from "./lib/i18n";
 import { Icon, Button, IconButton } from "./components/ui";
 import Wizard from "./pages/Wizard";
 import Home from "./pages/Home";
 import Downloads from "./pages/Downloads";
+import Library from "./pages/Library";
+import PlayerBar from "./components/PlayerBar";
 import SettingsPage from "./pages/SettingsPage";
 
 const NAV: { key: Page; icon: string; labelKey: string }[] = [
   { key: "home", icon: "home", labelKey: "nav.home" },
+  { key: "library", icon: "library_music", labelKey: "nav.library" },
   { key: "downloads", icon: "download", labelKey: "nav.downloads" },
   { key: "settings", icon: "settings", labelKey: "nav.settings" },
 ];
@@ -31,6 +35,7 @@ export default function App() {
   const toasts = useApp((state) => state.toasts);
   const dismissToast = useApp((state) => state.dismissToast);
   const availableUpdate = useApp((state) => state.availableUpdate);
+  const playing = useApp((state) => state.playing);
 
   useEffect(() => {
     init().catch(() => undefined);
@@ -121,7 +126,7 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-player={playing ? "true" : undefined}>
       <WindowTitlebar />
       <nav className="rail">
         <div style={{ height: 36 }} />
@@ -146,6 +151,7 @@ export default function App() {
       <div className="app-content">
         <div key={page} className="page-host animate-in" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
           {page === "home" ? <Home /> : null}
+          {page === "library" ? <Library /> : null}
           {page === "downloads" ? <Downloads /> : null}
           {page === "settings" ? <SettingsPage /> : null}
         </div>
@@ -153,7 +159,14 @@ export default function App() {
 
       {/* The banner is fixed to the bottom edge, so the toasts step up while it is
           visible instead of hiding behind it. */}
-      <div className="toast-host" data-raised={availableUpdate ? "true" : undefined}>
+      <div
+        className="toast-host"
+        data-raised={availableUpdate ? "true" : undefined}
+        // Toasts are the only feedback for a finished job; without this a screen
+        // reader never announces them.
+        aria-live="polite"
+        role="status"
+      >
         {toasts.map((toast) => (
           <div key={toast.id} className={`toast ${toast.tone === "info" ? "" : toast.tone}`}>
             <span className="grow md-body">{toast.text}</span>
@@ -173,6 +186,7 @@ export default function App() {
         ))}
       </div>
 
+      <PlayerBar />
       <UpdateBanner />
     </div>
   );
@@ -200,22 +214,29 @@ function UpdateBanner() {
   return (
     <div className="update-banner animate-in" role="status">
       <Icon name="system_update" filled />
-      <div className="grow">
-        <div className="md-body">{t("banner.updateReady", { version: update.version })}</div>
-        <div className="md-body-sm muted">
-          {/* A portable unpack has no installer to replace, so promising "it
-              installs itself" there would be a lie. */}
-          {portable ? t("banner.portableHint") : t("banner.updateHint")}
-        </div>
-      </div>
+      <span className="grow">{t("banner.updateReady", { version: update.version })}</span>
       <Button
         variant="filled"
         size="compact"
         icon="download"
         disabled={busy}
-        onClick={() => void install()}
+        onClick={() => {
+          // A portable unpack has no installer to replace: running it would put a
+          // second copy on the machine, so that build is sent to the release page.
+          if (portable) {
+            void openUrl("https://github.com/MrCripe/ym-dl/releases/latest").catch(() => undefined);
+            return;
+          }
+          void install();
+        }}
       >
-        {!busy ? t("set.updateBtn") : progress > 0 ? `${progress}%` : t("set.downloading")}
+        {!busy
+          ? portable
+            ? t("banner.download")
+            : t("set.updateBtn")
+          : progress > 0
+            ? `${progress}%`
+            : t("set.downloading")}
       </Button>
       <IconButton
         icon="close"

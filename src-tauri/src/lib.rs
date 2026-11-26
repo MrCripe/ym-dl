@@ -4,6 +4,8 @@ mod commands;
 mod config;
 mod download;
 mod ffmpeg;
+mod image;
+mod library;
 pub mod live;
 mod lyrics;
 mod model;
@@ -15,6 +17,25 @@ use commands::AppState;
 use std::path::PathBuf;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+
+/// Allows the webview to stream audio out of the download folder.
+///
+/// Called at startup and again after the folder setting changes: the scope is a
+/// runtime allow-list, not a config glob, precisely so it can follow the user's
+/// choice without opening the whole filesystem.
+pub fn grant_audio_scope(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(state) = app.try_state::<AppState>() {
+        let dir = state.settings().target_dir();
+        let scope = app.asset_protocol_scope();
+        if let Err(error) = scope.allow_directory(&dir, true) {
+            startup_log::write(&format!(
+                "не удалось открыть доступ к {} для прослушивания: {error}",
+                dir.display()
+            ));
+        }
+    }
+}
 
 /// Every folder worth trying as the WebView2 profile, in portable-first order:
 /// next to the exe so the whole app travels as one folder, then the profile, then
@@ -147,6 +168,11 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState::new(settings))
         .setup(move |app| {
+            // Playback reads the audio file through the asset protocol, which
+            // refuses every path outside its scope. The scope is granted here for
+            // the download folder only, and widened whenever the folder changes,
+            // so a compromised page cannot read the rest of the disk.
+            grant_audio_scope(app.handle());
             // A window that never opens must not look like a silent crash: the
             // user gets the real reasons and the path of the log file.
             if let Err(error) = create_window(app, &setup_theme) {
@@ -172,14 +198,21 @@ pub fn run() {
             commands::check_token,
             commands::login_yandex,
             commands::resolve_source,
+            commands::search_music,
             commands::load_likes,
             commands::start_download,
             commands::stop_download,
             commands::check_updates,
             commands::environment,
-            commands::post_process,
             commands::open_download_dir,
             commands::probe_lossless,
+            commands::library_list,
+            commands::library_update,
+            commands::library_delete,
+            commands::library_scan,
+            commands::library_cover,
+            commands::library_set_cover,
+            commands::library_upgrade,
         ])
         .run(tauri::generate_context!())
         .expect("не удалось запустить приложение");

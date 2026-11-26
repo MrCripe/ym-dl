@@ -18,6 +18,14 @@ pub const APP_DIR_NAME: &str = "ym-dl";
 pub struct Settings {
     pub username: String,
     pub download_dir: String,
+    /// One template per source. "Мне нравится" is a flat list of unrelated
+    /// tracks, albums have a natural folder, and a single track has neither.
+    pub pattern_likes: String,
+    pub pattern_album: String,
+    pub pattern_single: String,
+    /// The single template every source used before 1.4.0. Read once on load to
+    /// seed the three above, then never written again.
+    #[serde(default, skip_serializing)]
     pub path_pattern: String,
     pub quality: u8,
     pub skip_existing: bool,
@@ -50,7 +58,10 @@ impl Default for Settings {
         Self {
             username: String::new(),
             download_dir: String::new(),
-            path_pattern: "#track-artist - #title".into(),
+            pattern_likes: DEFAULT_PATTERN_LIKES.into(),
+            pattern_album: DEFAULT_PATTERN_ALBUM.into(),
+            pattern_single: DEFAULT_PATTERN_SINGLE.into(),
+            path_pattern: String::new(),
             quality: 2,
             skip_existing: true,
             embed_cover: true,
@@ -77,7 +88,39 @@ impl Default for Settings {
     }
 }
 
+pub const DEFAULT_PATTERN_LIKES: &str = "#title";
+pub const DEFAULT_PATTERN_ALBUM: &str = "#album-artist/#album/#number-padded #title";
+pub const DEFAULT_PATTERN_SINGLE: &str = "#track-artist - #title";
+
 impl Settings {
+    /// The template that applies to a resolved source.
+    ///
+    /// A playlist mixes tracks from different albums, so it uses the single-track
+    /// template: there is no one album folder it could honestly belong to.
+    pub fn pattern_for(&self, source_kind: &str) -> &str {
+        match source_kind {
+            "likes" => &self.pattern_likes,
+            "album" | "artist" => &self.pattern_album,
+            _ => &self.pattern_single,
+        }
+    }
+
+    /// Carries a pre-1.4.0 template over to all three sources.
+    ///
+    /// Doing nothing would silently change where files land for everyone who
+    /// upgraded, and their existing library would look like it needed downloading
+    /// again.
+    pub fn adopt_legacy_pattern(&mut self) {
+        let legacy = self.path_pattern.trim().to_string();
+        if legacy.is_empty() {
+            return;
+        }
+        self.pattern_likes = legacy.clone();
+        self.pattern_album = legacy.clone();
+        self.pattern_single = legacy;
+        self.path_pattern.clear();
+    }
+
     pub fn sanitize(&mut self) {
         if self.quality > 2 {
             self.quality = 2;
@@ -100,8 +143,14 @@ impl Settings {
         self.delay = self.delay.min(300);
         self.retry_delay = self.retry_delay.min(120);
         self.tries = self.tries.min(6);
-        if self.path_pattern.trim().is_empty() {
-            self.path_pattern = "#track-artist - #title".into();
+        if self.pattern_likes.trim().is_empty() {
+            self.pattern_likes = DEFAULT_PATTERN_LIKES.into();
+        }
+        if self.pattern_album.trim().is_empty() {
+            self.pattern_album = DEFAULT_PATTERN_ALBUM.into();
+        }
+        if self.pattern_single.trim().is_empty() {
+            self.pattern_single = DEFAULT_PATTERN_SINGLE.into();
         }
     }
 
@@ -321,6 +370,9 @@ pub fn load_settings() -> Settings {
         .ok()
         .and_then(|text| serde_json::from_str::<Settings>(&text).ok())
         .unwrap_or_default();
+    // The legacy value has to reach the three new fields before they are checked
+    // for emptiness, or sanitize would fill them with defaults first.
+    settings.adopt_legacy_pattern();
     settings.sanitize();
     adopt_legacy_download_dir(&mut settings);
     settings

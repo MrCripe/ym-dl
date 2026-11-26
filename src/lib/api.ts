@@ -4,6 +4,11 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 export type Settings = {
   username: string;
   downloadDir: string;
+  /// One template per source: likes, albums and single tracks differ.
+  patternLikes: string;
+  patternAlbum: string;
+  patternSingle: string;
+  /// The pre-1.4.0 single template. Only read by the backend migration.
   pathPattern: string;
   quality: number;
   skipExisting: boolean;
@@ -56,6 +61,38 @@ export type SourceInfo = {
   title: string;
   subtitle: string;
   tracks: TrackItem[];
+  /// Preview shown before anything is downloaded.
+  cover: string | null;
+  year: number | null;
+  quality: string;
+};
+
+/// One track row in the search results.
+export type SearchTrack = {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  durationMs: number;
+  cover: string | null;
+  link: string;
+};
+
+/// A card in one of the horizontal shelves.
+export type SearchCard = {
+  title: string;
+  subtitle: string;
+  cover: string | null;
+  link: string;
+  /// Artists are circles, albums and playlists squares.
+  round: boolean;
+};
+
+export type SearchResults = {
+  tracks: SearchTrack[];
+  artists: SearchCard[];
+  albums: SearchCard[];
+  playlists: SearchCard[];
 };
 
 export type TrackState = {
@@ -105,7 +142,58 @@ export type EnvironmentInfo = {
   os: string;
 };
 
-export type PostProcessStats = { converted: number; failed: number };
+/// One downloaded file as the local index knows it.
+export type LibraryTrack = {
+  id: number;
+  trackId: string;
+  isrc: string;
+  title: string;
+  artist: string;
+  albumArtist: string;
+  album: string;
+  genre: string;
+  year: number | null;
+  trackNumber: number | null;
+  discNumber: number | null;
+  durationMs: number;
+  codec: string;
+  bitrate: number;
+  path: string;
+  sizeBytes: number;
+  addedAt: number;
+};
+
+export type TagPatch = {
+  title?: string;
+  artist?: string;
+  albumArtist?: string;
+  album?: string;
+  genre?: string;
+  year?: number;
+  trackNumber?: number;
+  discNumber?: number;
+};
+
+export type ScanReport = {
+  scanned: number;
+  added: number;
+  updated: number;
+  skipped: number;
+  removed: number;
+};
+
+export type UpgradeOutcome = {
+  /// `upgraded`, `best` or `unavailable`.
+  status: string;
+  detail: string;
+  path: string | null;
+};
+
+export type LibrarySort = "added" | "artist" | "album" | "year" | "title" | "duration";
+
+/// One thing waiting in the download queue: a selection and where it came from.
+/// The kind picks the path template, so it travels with the tracks.
+export type Batch = { trackIds: string[]; sourceKind: string };
 
 const call = <T>(command: string, args?: Record<string, unknown>) =>
   invoke<T>(command, args).catch((error) => {
@@ -121,14 +209,24 @@ export const api = {
   /// Opens the Yandex sign-in window and resolves once the token is captured.
   loginYandex: () => call<AccountInfo>("login_yandex"),
   resolve: (url: string) => call<SourceInfo>("resolve_source", { url }),
+  search: (text: string) => call<SearchResults>("search_music", { text }),
   likes: () => call<SourceInfo>("load_likes"),
-  start: (trackIds: string[]) => call<void>("start_download", { trackIds }),
+  start: (batches: Batch[]) => call<void>("start_download", { batches }),
   stop: () => call<boolean>("stop_download"),
   updates: () => call<UpdateEntry[]>("check_updates"),
   environment: () => call<EnvironmentInfo>("environment"),
-  postProcess: () => call<PostProcessStats>("post_process"),
   openDownloadDir: () => call<void>("open_download_dir"),
   probeLossless: () => call<AccountInfo>("probe_lossless"),
+  libraryList: (sort: LibrarySort, descending: boolean, filter: string) =>
+    call<LibraryTrack[]>("library_list", { sort, descending, filter }),
+  libraryUpdate: (id: number, patch: TagPatch) =>
+    call<LibraryTrack>("library_update", { id, patch }),
+  libraryDelete: (id: number) => call<string>("library_delete", { id }),
+  libraryScan: () => call<ScanReport>("library_scan"),
+  libraryCover: (id: number) => call<string | null>("library_cover", { id }),
+  librarySetCover: (id: number, path: string) =>
+    call<void>("library_set_cover", { id, path }),
+  libraryUpgrade: (id: number) => call<UpgradeOutcome>("library_upgrade", { id }),
 };
 
 export type JobEvents = {

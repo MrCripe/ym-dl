@@ -24,7 +24,10 @@ pub const EVENT_LOG: &str = "job://log";
 pub const EVENT_FINISHED: &str = "job://finished";
 
 const BATCH: usize = 100;
-const PROGRESS_INTERVAL_MS: u128 = 120;
+// Every tick clones the whole track state and wakes the webview; at six workers
+// 120 ms produced about fifty events a second, which the interface re-rendered
+// for nothing. 250 ms is still smoother than the eye needs for a progress bar.
+const PROGRESS_INTERVAL_MS: u128 = 250;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -168,14 +171,21 @@ impl Shared {
         }
     }
 
-    async fn download_one(self: &Arc<Self>, index: usize, track: &Track, target_dir: &Path) {
+    async fn download_one(
+        self: &Arc<Self>,
+        index: usize,
+        track: &Track,
+        target_dir: &Path,
+        source_kind: &str,
+    ) {
         if !track.available {
             self.settle(index, "failed", "трек недоступен в регионе", "");
             return;
         }
         let item = api::track_item(track);
+        let pattern = self.settings.pattern_for(source_kind);
         let mut base = target_dir.join(audio::base_path(
-            &self.settings.path_pattern,
+            pattern,
             track,
             self.settings.unsafe_path,
         ));
@@ -185,13 +195,21 @@ impl Shared {
             base = target_dir.join(&item.id);
         }
 
-        if self.settings.skip_existing
-            && [".mp3", ".flac", ".m4a"]
+        if self.settings.skip_existing {
+            let at_path = [".mp3", ".flac", ".m4a"]
                 .iter()
-                .any(|suffix| PathBuf::from(format!("{}{suffix}", base.display())).is_file())
-        {
-            self.settle(index, "skipped", "уже скачан", &base.display().to_string());
-            return;
+                .map(|suffix| PathBuf::from(format!("{}{suffix}", base.display())))
+                .find(|candidate| candidate.is_file());
+            let known = match crate::library::find_by_track_id(&item.id) {
+                // A row whose file was deleted from disk is not a reason to skip.
+                Ok(Some(entry)) if Path::new(&entry.path).is_file() => Some(entry),
+                _ => None,
+            };
+            if let Some(existing) = at_path.or_else(|| known.as_ref().map(|e| PathBuf::from(&e.path)))
+            {
+                self.settle(index, "skipped", "уже скачан", &existing.display().to_string());
+                return;
+            }
         }
 
         let quality = match self.settings.quality {
@@ -295,8 +313,16 @@ impl Shared {
                     self.log("ok", format!("FLAC извлечён: {}", final_path.display()));
                 }
                 "exists" => {
-                    ffmpeg::drop_source(&final_path);
-                    final_path = final_path.with_extension("flac");
+                    // A `.flac` that was already there is not this download's
+                    // audio, so the fresh file is kept and the old one left alone.
+                    self.log(
+                        "warn",
+                        format!(
+                            "Рядом уже есть {}; скачанный файл оставлен как {}",
+                            final_path.with_extension("flac").display(),
+                            final_path.display()
+                        ),
+                    );
                 }
                 _ => self.log(
                     "warn",
@@ -312,12 +338,59 @@ impl Shared {
             self.log("warn", format!("Теги не записались для «{}»: {error:#}", item.title));
         }
 
+        // The registry is what the library screen reads and what stops the same
+        // track from being downloaded again after a template change.
+        self.remember(track, &final_path, codec, info.bitrate);
+
         let label = if info.bitrate > 0 {
             format!("{codec} {} kbps", info.bitrate)
         } else {
             codec.to_string()
         };
         self.settle(index, "ok", &label, &final_path.display().to_string());
+    }
+
+    /// Writes the finished file into the local index.
+    ///
+    /// Failure here is logged rather than failing the track: the audio is on disk
+    /// and playable, and `scan` can rebuild the row later.
+    fn remember(&self, track: &Track, path: &Path, codec: &str, bitrate: u32) {
+        let item = api::track_item(track);
+        let album = track.albums.first();
+        let position = album.and_then(|album| album.track_position.as_ref());
+        let entry = crate::library::LibraryTrack {
+            track_id: item.id.clone(),
+            isrc: track.isrc.clone().unwrap_or_default(),
+            title: item.title.clone(),
+            artist: item.artist.clone(),
+            album_artist: album
+                .map(|album| {
+                    album
+                        .artists
+                        .iter()
+                        .map(|artist| artist.name.clone())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .unwrap_or_default(),
+            album: album.map(|album| album.title.clone()).unwrap_or_default(),
+            genre: album.and_then(|album| album.genre.clone()).unwrap_or_default(),
+            year: album.and_then(|album| album.year),
+            track_number: position.and_then(|value| value.index),
+            disc_number: position.and_then(|value| value.volume),
+            duration_ms: track.duration_ms.unwrap_or(0),
+            codec: codec.to_string(),
+            bitrate,
+            path: path.display().to_string(),
+            size_bytes: std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0),
+            ..Default::default()
+        };
+        if let Err(error) = crate::library::record(&entry) {
+            self.log(
+                "warn",
+                format!("Не удалось записать трек в библиотеку: {error:#}"),
+            );
+        }
     }
 
     async fn tag(&self, index: usize, track: &Track, path: &Path, track_id: &str) -> Result<()> {
@@ -333,21 +406,7 @@ impl Shared {
         );
 
         if self.settings.embed_cover {
-            let uri = track
-                .albums
-                .first()
-                .and_then(|album| album.cover_uri.clone())
-                .or_else(|| track.cover_uri.clone());
-            if let Some(uri) = uri {
-                let size = if self.settings.cover_original {
-                    "orig".to_string()
-                } else {
-                    format!("{}x{}", self.settings.cover_resolution, self.settings.cover_resolution)
-                };
-                if let Ok(bytes) = self.client.cover(&uri, &size).await {
-                    payload.cover = Some(bytes);
-                }
-            }
+            payload.cover = cover_bytes(&self.client, &self.settings, track).await;
         }
 
         if self.settings.lyrics_format != "none" {
@@ -386,6 +445,21 @@ impl Shared {
     }
 }
 
+/// The album cover at the size the settings ask for, when the track has one.
+async fn cover_bytes(client: &Client, settings: &Settings, track: &Track) -> Option<Vec<u8>> {
+    let uri = track
+        .albums
+        .first()
+        .and_then(|album| album.cover_uri.clone())
+        .or_else(|| track.cover_uri.clone())?;
+    let size = if settings.cover_original {
+        "orig".to_string()
+    } else {
+        format!("{}x{}", settings.cover_resolution, settings.cover_resolution)
+    };
+    client.cover(&uri, &size).await.ok()
+}
+
 /// Reserves a unique path inside `claimed`, adding " (2)", " (3)" … on a clash.
 /// Two tracks that render to the same name would otherwise overwrite each other.
 fn claim_path(claimed: &mut std::collections::HashSet<PathBuf>, path: PathBuf) -> PathBuf {
@@ -409,9 +483,225 @@ fn claim_path(claimed: &mut std::collections::HashSet<PathBuf>, path: PathBuf) -
     path
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeOutcome {
+    /// `upgraded`, `best` or `unavailable`.
+    pub status: String,
+    pub detail: String,
+    pub path: Option<String>,
+}
+
+fn is_lossless(codec: &str) -> bool {
+    matches!(codec, "flac" | "flac-mp4")
+}
+
+/// Whether the offered stream is actually better than the file on disk.
+///
+/// A codec that is lossless beats one that is not, whatever the numbers say. Two
+/// lossy streams are compared by bitrate, with a small margin so that a track
+/// already at 192 kbps is not re-downloaded for a nominal 193.
+fn is_better(existing_codec: &str, existing_bitrate: u32, new_codec: &str, new_bitrate: u32) -> bool {
+    let existing_lossless = is_lossless(existing_codec) || existing_codec.eq_ignore_ascii_case("flac");
+    let new_lossless = is_lossless(new_codec);
+    if new_lossless && !existing_lossless {
+        return true;
+    }
+    if existing_lossless && !new_lossless {
+        return false;
+    }
+    new_bitrate > existing_bitrate.saturating_add(existing_bitrate / 20)
+}
+
+/// Whether two paths name the same file.
+///
+/// Case matters on Linux and does not on Windows, and `Song.flac` versus
+/// `Song.FLAC` is the difference between replacing a track and deleting it.
+fn same_path(left: &Path, right: &Path) -> bool {
+    if let (Ok(left), Ok(right)) = (left.canonicalize(), right.canonicalize()) {
+        return left == right;
+    }
+    let as_text = |path: &Path| path.to_string_lossy().to_lowercase();
+    as_text(left) == as_text(right)
+}
+
+/// Re-downloads one library track at the best quality the account is offered and
+/// replaces the file in place.
+///
+/// This is the same pipeline as a normal download, minus the queue: it writes a
+/// temporary file next to the old one, extracts FLAC when asked, carries the
+/// existing lyrics over, tags the result, and only then removes the old file. A
+/// failure at any step leaves the original untouched.
+pub async fn upgrade_track(
+    client: &Client,
+    settings: &Settings,
+    entry: &crate::library::LibraryTrack,
+) -> Result<UpgradeOutcome> {
+    if entry.track_id.trim().is_empty() {
+        anyhow::bail!("у этого файла нет идентификатора трека — качество не проверить");
+    }
+    let old_path = PathBuf::from(&entry.path);
+    if !old_path.is_file() {
+        anyhow::bail!("файл не найден: {}", old_path.display());
+    }
+
+    let info = client.download_info(&entry.track_id, "lossless").await?;
+    if !is_better(&entry.codec, entry.bitrate, &info.codec, info.bitrate) {
+        return Ok(UpgradeOutcome {
+            status: "best".into(),
+            detail: if info.bitrate > 0 {
+                format!("уже лучшее: {} {} kbps", info.codec, info.bitrate)
+            } else {
+                format!("уже лучшее: {}", info.codec)
+            },
+            path: None,
+        });
+    }
+
+    let track = client
+        .tracks(std::slice::from_ref(&entry.track_id))
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("трек не найден в сервисе"))?;
+
+    if info.urls.is_empty() {
+        anyhow::bail!("сервер не вернул ссылку на файл");
+    }
+    let body = client.audio_stream(&info.urls, |_, _| true).await?;
+    let bytes = match info.key.as_deref().filter(|key| !key.is_empty()) {
+        Some(key) => audio::decrypt(body, key)?,
+        None => body,
+    };
+
+    let (container, codec) = audio::container_name(&info.codec);
+    let extension = audio::extension_for(container, codec);
+    // Mutable: extracting FLAC moves the result to a `.flac` name, and the file
+    // has to land under the extension its contents actually have.
+    let mut final_path = old_path.with_extension(extension.trim_start_matches('.'));
+
+    // Lyrics live in the file, not in the registry: read them before the old file
+    // is touched, or the upgrade silently drops them.
+    let previous = audio::read_file_metadata(&old_path).unwrap_or_default();
+    let mut payload = audio::TagPayload::from_track(
+        &track,
+        format!(
+            "https://music.yandex.ru/album/{}/track/{}",
+            track
+                .albums
+                .first()
+                .and_then(|album| api::value_to_id(&album.id))
+                .unwrap_or_default(),
+            entry.track_id
+        ),
+        settings.compatibility_level,
+    );
+    if !previous.lyrics.is_empty() {
+        payload.lyrics = Some(previous.lyrics);
+    }
+    if settings.embed_cover {
+        payload.cover = cover_bytes(client, settings, &track).await;
+    }
+
+    // The new audio is staged beside the old file and moved into place only once
+    // it is tagged. Writing straight onto `final_path` used to replace the
+    // original before tagging ran, so a failed tag cost the user the track.
+    // Staged beside the target, not beside the old file: when the old file is
+    // already `.flac`, a staging name derived from it is that very file.
+    let mut staged = audio::part_path(&final_path);
+    std::fs::write(&staged, &bytes)?;
+
+    if settings.extract_flac && codec == "FLAC" && container == "MP4" && ffmpeg::available() {
+        // A `.flac` left by an interrupted run would be taken for this
+        // conversion's result, so it is cleared first.
+        let _ = std::fs::remove_file(staged.with_extension("flac"));
+        let source = staged.clone();
+        let outcome = tauri::async_runtime::spawn_blocking(move || ffmpeg::extract_flac(&source))
+            .await
+            .unwrap_or_else(|_| "failed".to_string());
+        if outcome == "converted" {
+            ffmpeg::drop_source(&staged);
+            staged = staged.with_extension("flac");
+            final_path = final_path.with_extension("flac");
+        }
+        // A failed extraction leaves the staged `.m4a`: the same audio, only in
+        // its original container. Losing the upgrade is better than losing the
+        // track, and the next attempt can try again.
+    }
+
+    // Tagging and moving are the two steps that can fail halfway; each cleans up
+    // its staged file so a `.part` never turns into a phantom library entry.
+    if let Err(error) = audio::write_tags(&staged, &payload) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(error);
+    }
+    if let Err(error) = std::fs::rename(&staged, &final_path) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(error.into());
+    }
+
+    // The old file goes only when the new one landed at another path. On Windows
+    // `Song.FLAC` and `Song.flac` are one file, and comparing the paths as text
+    // used to delete the file that had just been written.
+    if !same_path(&final_path, &old_path) {
+        let _ = std::fs::remove_file(&old_path);
+        let old_lrc = old_path.with_extension("lrc");
+        if old_lrc.is_file() {
+            let _ = std::fs::rename(&old_lrc, final_path.with_extension("lrc"));
+        }
+    }
+
+    let record = crate::library::LibraryTrack {
+        track_id: entry.track_id.clone(),
+        isrc: track.isrc.clone().unwrap_or_default(),
+        title: payload.title.clone(),
+        artist: payload.artist.join("; "),
+        album_artist: payload.album_artist.join("; "),
+        album: payload.album.clone(),
+        genre: payload.genre.clone().unwrap_or_default(),
+        year: payload.year,
+        track_number: payload.track_number,
+        disc_number: payload.disc_number,
+        duration_ms: track.duration_ms.unwrap_or(0),
+        codec: codec.to_string(),
+        bitrate: info.bitrate,
+        path: final_path.display().to_string(),
+        size_bytes: std::fs::metadata(&final_path).map(|meta| meta.len()).unwrap_or(0),
+        ..Default::default()
+    };
+    // The row is keyed by path, so a different extension would leave the old row
+    // pointing at a file that no longer exists. Compared as paths, not as text:
+    // a case-only difference is the same file on Windows.
+    if !same_path(&final_path, &old_path) {
+        let _ = crate::library::forget(entry.id);
+    }
+    crate::library::record(&record)?;
+
+    Ok(UpgradeOutcome {
+        status: "upgraded".into(),
+        detail: if info.bitrate > 0 {
+            format!("{codec} {} kbps", info.bitrate)
+        } else {
+            codec.to_string()
+        },
+        path: Some(final_path.display().to_string()),
+    })
+}
+
+/// One thing the user put in the queue: a selection and where it came from.
+///
+/// The kind travels with the tracks because each source has its own path
+/// template, and a queue mixes likes with albums and single tracks.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Batch {
+    pub track_ids: Vec<String>,
+    pub source_kind: String,
+}
+
 pub struct Job {
     shared: Arc<Shared>,
-    track_ids: Vec<String>,
+    batches: Vec<Batch>,
 }
 
 impl Job {
@@ -420,8 +710,9 @@ impl Job {
         client: Client,
         settings: Settings,
         control: JobControl,
-        track_ids: Vec<String>,
+        batches: Vec<Batch>,
     ) -> Self {
+        let total = batches.iter().map(|batch| batch.track_ids.len()).sum();
         Self {
             shared: Arc::new(Shared {
                 app,
@@ -430,31 +721,43 @@ impl Job {
                 control,
                 counters: Counters::default(),
                 states: Mutex::new(Vec::new()),
-                total: AtomicUsize::new(track_ids.len()),
+                total: AtomicUsize::new(total),
                 claimed: Mutex::new(std::collections::HashSet::new()),
                 missing_lyrics: Mutex::new(Vec::new()),
             }),
-            track_ids,
+            batches,
         }
     }
 
     pub async fn run(self) -> Result<JobProgress> {
         let shared = self.shared;
-        if self.track_ids.is_empty() {
+        let wanted: usize = self.batches.iter().map(|batch| batch.track_ids.len()).sum();
+        if wanted == 0 {
             anyhow::bail!("Ничего не выбрано");
         }
 
-        let mut tracks: Vec<Track> = Vec::with_capacity(self.track_ids.len());
-        for chunk in self.track_ids.chunks(BATCH) {
-            if shared.control.is_cancelled() {
-                break;
+        // Every track keeps the kind of the batch it came from: the path template
+        // is chosen per track, not per job.
+        let mut tracks: Vec<Track> = Vec::with_capacity(wanted);
+        let mut kinds: Vec<String> = Vec::with_capacity(wanted);
+        for batch in &self.batches {
+            for chunk in batch.track_ids.chunks(BATCH) {
+                if shared.control.is_cancelled() {
+                    break;
+                }
+                let fetched = shared.client.tracks(chunk).await?;
+                kinds.resize(kinds.len() + fetched.len(), batch.source_kind.clone());
+                tracks.extend(fetched);
+                shared.log(
+                    "info",
+                    format!("Получены данные о треках: {} из {}", tracks.len(), wanted),
+                );
             }
-            let fetched = shared.client.tracks(chunk).await?;
-            tracks.extend(fetched);
-            shared.log(
-                "info",
-                format!("Получены данные о треках: {} из {}", tracks.len(), self.track_ids.len()),
-            );
+        }
+        // A batch whose tracks did not arrive leaves `kinds` short; the download
+        // loop indexes both, so it is padded to the same length.
+        while kinds.len() < tracks.len() {
+            kinds.push("track".to_string());
         }
 
         shared.total.store(tracks.len(), Ordering::SeqCst);
@@ -513,10 +816,12 @@ impl Job {
         let next = Arc::new(AtomicUsize::new(0));
         let workers = shared.settings.concurrent.clamp(1, 6) as usize;
         let tracks = Arc::new(tracks);
+        let kinds = Arc::new(kinds);
         let mut handles = Vec::with_capacity(workers);
         for _ in 0..workers {
             let shared = shared.clone();
             let tracks = tracks.clone();
+            let kinds = kinds.clone();
             let next = next.clone();
             let target_dir = target_dir.clone();
             handles.push(tauri::async_runtime::spawn(async move {
@@ -525,7 +830,10 @@ impl Job {
                     if index >= tracks.len() || shared.control.is_cancelled() {
                         break;
                     }
-                    shared.download_one(index, &tracks[index], &target_dir).await;
+                    let kind = kinds.get(index).map(String::as_str).unwrap_or("track");
+                    shared
+                        .download_one(index, &tracks[index], &target_dir, kind)
+                        .await;
                     shared.counters.done.fetch_add(1, Ordering::SeqCst);
                     shared.emit_progress(true);
 
@@ -619,8 +927,7 @@ impl Job {
         // No folder-wide sweep here. Every track this job wrote was already
         // converted on the spot, so walking the download folder with ffprobe again
         // only re-examined files the app did not touch — and the folder is now the
-        // user's whole music library. Old `.m4a` files are handled by the explicit
-        // "Перепаковать папку сейчас" button, where the cost is expected.
+        // user's whole music library.
 
         let final_progress = JobProgress {
             done: shared.counters.done.load(Ordering::SeqCst),
@@ -661,5 +968,26 @@ mod tests {
         let second = claim_path(&mut claimed, PathBuf::from("a/track.flac"));
         assert_eq!(second.extension().and_then(|e| e.to_str()), Some("flac"));
         assert_eq!(second.file_stem().and_then(|s| s.to_str()), Some("track (2)"));
+    }
+
+    /// The upgrade replaces the file in place, so "same file" has to be decided
+    /// by the filesystem, not by the text of the path: a case-only difference is
+    /// one file on Windows and the difference between replacing and deleting.
+    #[test]
+    fn a_case_only_difference_is_the_same_file() {
+        let upper = PathBuf::from("a/Song.FLAC");
+        let lower = PathBuf::from("a/Song.flac");
+        assert!(same_path(&upper, &lower));
+        assert!(!same_path(&lower, &PathBuf::from("a/Song.m4a")));
+    }
+
+    /// The staging file must never be the file it is meant to replace: an old
+    /// `.flac` used to produce a staging name equal to the track itself.
+    #[test]
+    fn staging_never_collides_with_the_target() {
+        for name in ["a/Song.flac", "a/Song.m4a", "a/Song.mp3"] {
+            let target = PathBuf::from(name);
+            assert_ne!(audio::part_path(&target), target, "{name}");
+        }
     }
 }

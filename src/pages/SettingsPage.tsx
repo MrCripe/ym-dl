@@ -23,7 +23,10 @@ const ACCENTS: { value: string; key: string; color: string }[] = [
  * `example` is what the user actually sees: a template alone says nothing about
  * the folder that comes out of it.
  */
-const LAYOUTS: { key: string; hint: string; pattern: string; example: string }[] = [
+type LayoutPreset = { key: string; hint: string; pattern: string; example: string };
+
+/** Presets for liked tracks: unrelated songs, so no album folder makes sense. */
+const LIKES_LAYOUTS: LayoutPreset[] = [
   {
     key: "layout.likes",
     hint: "layout.likesHint",
@@ -31,11 +34,21 @@ const LAYOUTS: { key: string; hint: string; pattern: string; example: string }[]
     example: "Smells Like Teen Spirit.flac",
   },
   {
-    key: "layout.single",
-    hint: "layout.singleHint",
+    key: "layout.likesArtist",
+    hint: "layout.likesArtistHint",
     pattern: "#track-artist - #title",
     example: "Nirvana - Smells Like Teen Spirit.flac",
   },
+  {
+    key: "layout.likesYear",
+    hint: "layout.likesYearHint",
+    pattern: "#track-artist/#year - #title",
+    example: "Nirvana/1991 - Smells Like Teen Spirit.flac",
+  },
+];
+
+/** Presets for albums: an album is a folder with numbered tracks inside. */
+const ALBUM_LAYOUTS: LayoutPreset[] = [
   {
     key: "layout.album",
     hint: "layout.albumHint",
@@ -56,6 +69,28 @@ const LAYOUTS: { key: string; hint: string; pattern: string; example: string }[]
   },
 ];
 
+/** Presets for a loose track: no album context, so the artist leads. */
+const SINGLE_LAYOUTS: LayoutPreset[] = [
+  {
+    key: "layout.single",
+    hint: "layout.singleHint",
+    pattern: "#track-artist - #title",
+    example: "Nirvana - Smells Like Teen Spirit.flac",
+  },
+  {
+    key: "layout.singleFlat",
+    hint: "layout.singleFlatHint",
+    pattern: "#title",
+    example: "Smells Like Teen Spirit.flac",
+  },
+  {
+    key: "layout.singleAlbum",
+    hint: "layout.singleAlbumHint",
+    pattern: "#album-artist/#album/#number-padded #title",
+    example: "Nirvana/Nevermind/05 Smells Like Teen Spirit.flac",
+  },
+];
+
 export default function SettingsPage() {
   const t = useT();
   const lang = useLang();
@@ -68,7 +103,6 @@ export default function SettingsPage() {
   const [env, setEnv] = useState<EnvironmentInfo | null>(null);
   const [updates, setUpdates] = useState<UpdateEntry[] | null>(null);
   const [checking, setChecking] = useState(false);
-  const [repackAsk, setRepackAsk] = useState(false);
 
   useEffect(() => {
     api.environment().then(setEnv).catch(() => undefined);
@@ -103,9 +137,6 @@ export default function SettingsPage() {
   if (!draft) return null;
 
   const expiry = account?.expires ? formatExpiry(account.expires, lang) : "";
-
-  const activeLayout =
-    LAYOUTS.find((layout) => layout.pattern === draft.pathPattern)?.key ?? "custom";
 
   return (
     <div className="page">
@@ -183,7 +214,6 @@ export default function SettingsPage() {
         <Section icon="folder" title={t("set.files")}>
           <Row
             name={t("set.folder")}
-            desc={t("set.folderDefault")}
             control={
               <div className="field-holder">
                 <TextField
@@ -205,8 +235,12 @@ export default function SettingsPage() {
                 size="compact"
                 icon="folder_open"
                 onClick={async () => {
-                  const picked = await openDialog({ directory: true, multiple: false });
-                  if (typeof picked === "string") patch({ downloadDir: picked });
+                  try {
+                    const picked = await openDialog({ directory: true, multiple: false });
+                    if (typeof picked === "string") patch({ downloadDir: picked });
+                  } catch (error) {
+                    toast(String((error as Error).message), "error");
+                  }
                 }}
               >
                 {t("set.browse")}
@@ -230,7 +264,6 @@ export default function SettingsPage() {
           />
           <Row
             name={t("set.skipExisting")}
-            desc={t("set.skipExistingDesc")}
             control={
               <Switch
                 checked={draft.skipExisting}
@@ -242,38 +275,34 @@ export default function SettingsPage() {
         </Section>
 
         <Section icon="queue_music" title={t("set.layout")}>
-          <div className="layout-list">
-            <p className="layout-intro">{t("set.layoutDesc")}</p>
-            {LAYOUTS.map((layout) => (
-              <button
-                key={layout.key}
-                type="button"
-                className={`layout-option${activeLayout === layout.key ? " active" : ""}`}
-                aria-pressed={activeLayout === layout.key}
-                onClick={() => patch({ pathPattern: layout.pattern })}
-              >
-                <div className="layout-text">
-                  <span className="layout-name">{t(layout.key)}</span>
-                  <span className="layout-hint">{t(layout.hint)}</span>
-                </div>
-                <code className="layout-example">{layout.example}</code>
-              </button>
-            ))}
-            <div className={`layout-option custom${activeLayout === "custom" ? " active" : ""}`}>
-              <div className="layout-text">
-                <span className="layout-name">{t("set.layoutCustom")}</span>
-                <span className="layout-hint">{t("layout.customHint")}</span>
-              </div>
-              <div className="layout-input">
-                <TextField
-                  value={draft.pathPattern}
-                  icon="edit"
-                  quiet
-                  onChange={(value) => patch({ pathPattern: value })}
-                />
-              </div>
-            </div>
-          </div>
+          <p className="layout-intro">{t("set.layoutDesc")}</p>
+          <LayoutGroup
+            index={0}
+            icon="favorite"
+            title={t("set.layoutLikes")}
+            note={t("set.layoutLikesNote")}
+            presets={LIKES_LAYOUTS}
+            value={draft.patternLikes}
+            onChange={(value) => patch({ patternLikes: value })}
+          />
+          <LayoutGroup
+            index={1}
+            icon="album"
+            title={t("set.layoutAlbums")}
+            note={t("set.layoutAlbumsNote")}
+            presets={ALBUM_LAYOUTS}
+            value={draft.patternAlbum}
+            onChange={(value) => patch({ patternAlbum: value })}
+          />
+          <LayoutGroup
+            index={2}
+            icon="music_note"
+            title={t("set.layoutSingles")}
+            note={t("set.layoutSinglesNote")}
+            presets={SINGLE_LAYOUTS}
+            value={draft.patternSingle}
+            onChange={(value) => patch({ patternSingle: value })}
+          />
         </Section>
 
         <Section icon="subtitles" title={t("set.tags")}>
@@ -522,51 +551,6 @@ export default function SettingsPage() {
               )
             }
           />
-          <Row
-            name={t("set.repack")}
-            desc={repackAsk ? t("set.repackWarn") : t("set.repackDesc")}
-            control={
-              repackAsk ? (
-                <>
-                  <Button
-                    variant="danger-tonal"
-                    size="compact"
-                    icon="build"
-                    onClick={async () => {
-                      setRepackAsk(false);
-                      try {
-                        const stats = await api.postProcess();
-                        toast(
-                          t("set.repackDone", {
-                            converted: stats.converted,
-                            failed: stats.failed,
-                          }),
-                          stats.failed ? "error" : "success",
-                        );
-                      } catch (error) {
-                        toast(String((error as Error).message), "error");
-                      }
-                    }}
-                  >
-                    {t("set.repackConfirm")}
-                  </Button>
-                  <Button variant="text" size="compact" onClick={() => setRepackAsk(false)}>
-                    {t("set.repackCancel")}
-                  </Button>
-                </>
-              ) : (
-                <Button
-                  variant="tonal"
-                  size="compact"
-                  icon="build"
-                  disabled={!env?.ffmpeg}
-                  onClick={() => setRepackAsk(true)}
-                >
-                  {t("set.repackRun")}
-                </Button>
-              )
-            }
-          />
         </Section>
 
         <Section icon="palette" title={t("set.appearance")}>
@@ -681,7 +665,6 @@ export default function SettingsPage() {
           />
           <Row
             name={t("set.resetToken")}
-            desc={t("set.resetTokenDesc")}
             control={
               <Button
                 variant="danger-tonal"
@@ -704,17 +687,7 @@ export default function SettingsPage() {
         <Section icon="info" title={t("set.about")}>
           <Row
             name={t("set.aboutApp")}
-            desc={t("set.aboutDesc")}
             control={<Badge tone="primary">{env?.appVersion ?? "—"}</Badge>}
-          />
-          <Row
-            name={t("set.aboutSystem")}
-            desc={env?.os ?? ""}
-            control={
-              <span className="path-box">
-                {env?.portable ? t("set.aboutPortable") : t("set.aboutInstalled")}
-              </span>
-            }
           />
           <Row
             name={t("set.aboutLinks")}
@@ -769,6 +742,107 @@ function formatExpiry(value: string, lang: string): string {
     minute: "2-digit",
     timeZone: "Europe/Moscow",
   }).format(date);
+}
+
+/** Sample values used to show what a template produces before it is used. */
+const SAMPLE: Record<string, string> = {
+  "#title": "Smells Like Teen Spirit",
+  "#track-artist": "Nirvana",
+  "#album-artist": "Nirvana",
+  "#album": "Nevermind",
+  "#year": "1991",
+  "#number-padded": "05",
+  "#number": "5",
+  "#disc-number-padded": "01",
+  "#disc-number": "1",
+  "#track-id": "140590156",
+  "#album-id": "42206349",
+  "#artist-id": "12345",
+};
+
+/**
+ * Renders a template with sample values, so the folder it produces is visible
+ * while it is being typed rather than after a download lands somewhere odd.
+ */
+function previewPath(pattern: string): string {
+  // Longest keys first: `#number-padded` must win over `#number`, or the result
+  // reads "05-padded".
+  const keys = Object.keys(SAMPLE).sort((a, b) => b.length - a.length);
+  let result = pattern;
+  for (const key of keys) {
+    result = result.split(key).join(SAMPLE[key]);
+  }
+  return `${result.trim() || "—"}.flac`;
+}
+
+/**
+ * One source's path template: presets plus a custom field.
+ *
+ * The three sources are separate because they are genuinely different shapes: a
+ * liked track has no album folder, an album does, and a loose track has neither.
+ */
+function LayoutGroup({
+  index,
+  icon,
+  title,
+  note,
+  presets,
+  value,
+  onChange,
+}: {
+  /** Position in the list: drives the entrance stagger. */
+  index: number;
+  icon: string;
+  title: string;
+  note: string;
+  presets: LayoutPreset[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const t = useT();
+  const isCustom = !presets.some((preset) => preset.pattern === value);
+
+  return (
+    <div className="layout-group" style={{ ["--i" as string]: index }}>
+      <div className="layout-group-head">
+        <Icon name={icon} />
+        <div>
+          <span className="layout-name">{title}</span>
+          <span className="layout-hint">{note}</span>
+        </div>
+      </div>
+
+      <div className="layout-presets">
+        {presets.map((preset) => (
+          <button
+            key={preset.key}
+            type="button"
+            className={`layout-chip${value === preset.pattern ? " active" : ""}`}
+            aria-pressed={value === preset.pattern}
+            onClick={() => onChange(preset.pattern)}
+          >
+            <span className="layout-chip-name">{t(preset.key)}</span>
+            <span className="layout-chip-hint">{t(preset.hint)}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="layout-custom">
+        <TextField
+          label={isCustom ? t("set.layoutCustom") : t("set.layoutCustomOptional")}
+          value={value}
+          icon="edit"
+          quiet
+          onChange={onChange}
+        />
+        {/* Keyed by the template: a new value remounts the element, which is
+            what replays the fade on every change. */}
+        <code className="layout-preview" key={value}>
+          {previewPath(value)}
+        </code>
+      </div>
+    </div>
+  );
 }
 
 function Section({

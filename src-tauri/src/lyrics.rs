@@ -52,10 +52,11 @@ static LRCLIB_GATE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mu
 /// Waits until the next lrclib request is allowed, then claims the slot.
 async fn lrclib_turn() {
     let wait = {
+        // A poisoned gate must not stop lyrics forever: take the value back, as
+        // the rest of the project does, instead of returning early.
         let mut last = match LRCLIB_GATE.lock() {
             Ok(last) => last,
-            // A poisoned gate must not stop lyrics forever; skip the throttle.
-            Err(_) => return,
+            Err(poisoned) => poisoned.into_inner(),
         };
         let now = std::time::Instant::now();
         let wait = match *last {

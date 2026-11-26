@@ -43,7 +43,9 @@ export default function Downloads() {
   const percent = progress && progress.total > 0 ? (progress.done / progress.total) * 100 : 0;
 
   useEffect(() => {
-    logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
+    // Instant, not smooth: lines arrive several times a second, and overlapping
+    // smooth scrolls fight each other and read as a jitter.
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [logs.length]);
 
   const folderButton = (

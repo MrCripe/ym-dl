@@ -13,6 +13,17 @@ pub struct Artist {
     pub id: serde_json::Value,
     #[serde(default)]
     pub name: String,
+    /// Only the search result carries this; track and album payloads do not.
+    #[serde(default)]
+    pub cover_uri: Option<String>,
+    /// The search result sends the picture as an object, not as `coverUri`,
+    /// which is why artist cards used to show an empty circle.
+    #[serde(default)]
+    pub cover: Option<SearchCover>,
+    /// Plain image URL the service also provides; a fallback when there is no
+    /// cover object.
+    #[serde(default)]
+    pub op_image: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -81,6 +92,10 @@ pub struct Track {
     pub lyrics_info: Option<LyricsInfo>,
     #[serde(default)]
     pub cover_uri: Option<String>,
+    /// Present on the rare track the service ships with one. Yandex does not
+    /// expose ISRC for most releases, so an empty value is the normal case.
+    #[serde(default)]
+    pub isrc: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -108,6 +123,8 @@ pub struct Playlist {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Owner {
+    #[serde(default)]
+    pub uid: serde_json::Value,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -144,6 +161,16 @@ pub struct Album {
 pub struct ArtistAlbums {
     #[serde(default)]
     pub albums: Vec<AlbumRef>,
+    #[serde(default)]
+    pub pager: Option<Pager>,
+}
+
+/// A page of an artist's own tracks (`/artists/{id}/tracks`).
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtistTracks {
+    #[serde(default)]
+    pub tracks: Vec<Track>,
     #[serde(default)]
     pub pager: Option<Pager>,
 }
@@ -292,9 +319,101 @@ pub struct TrackItem {
     pub year: Option<i32>,
 }
 
+/// One track in the search results, with everything the row shows.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchTrack {
+    pub id: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration_ms: u64,
+    /// Cover as a data URL, already fetched: the list shows covers immediately
+    /// instead of popping them in one by one.
+    pub cover: Option<String>,
+    /// A normal page address, so picking the row feeds the resolve path.
+    pub link: String,
+}
+
+/// A card in one of the horizontal shelves: artist, album or playlist.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchCard {
+    pub title: String,
+    pub subtitle: String,
+    pub cover: Option<String>,
+    pub link: String,
+    /// Artists are shown as circles, albums and playlists as squares.
+    pub round: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResults {
+    pub tracks: Vec<SearchTrack>,
+    pub artists: Vec<SearchCard>,
+    pub albums: Vec<SearchCard>,
+    pub playlists: Vec<SearchCard>,
+}
+
+/// `search` wraps every section the same way: `{results: [...]}`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchSection<T> {
+    #[serde(default)]
+    pub results: Vec<T>,
+}
+
+/// The search payload has no `result` wrapper: the sections sit at the top level.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchPayload {
+    #[serde(default)]
+    pub tracks: SearchSection<Track>,
+    #[serde(default)]
+    pub albums: SearchSection<AlbumRef>,
+    #[serde(default)]
+    pub artists: SearchSection<Artist>,
+    #[serde(default)]
+    pub playlists: SearchSection<SearchPlaylist>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchPlaylist {
+    #[serde(default)]
+    pub kind: serde_json::Value,
+    #[serde(default)]
+    pub uid: serde_json::Value,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub owner: Option<Owner>,
+    #[serde(default)]
+    pub track_count: Option<u32>,
+    #[serde(default)]
+    pub cover: Option<SearchCover>,
+}
+
+/// A playlist cover is either one URI or a collage of up to four.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchCover {
+    #[serde(default)]
+    pub uri: Option<String>,
+    #[serde(default)]
+    pub items_uri: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceInfo {
+    /// Preview of what was resolved, shown before anything is downloaded: a
+    /// cover as a data URL, the year and what quality the service offers for it.
+    pub cover: Option<String>,
+    pub year: Option<i32>,
+    /// `flac` or `aac`, as the service really answers for this account.
+    pub quality: String,
     pub kind: String,
     pub title: String,
     pub subtitle: String,
@@ -362,8 +481,6 @@ pub struct EnvironmentInfo {
     pub ffmpeg_path: String,
     pub app_version: String,
     pub config_path: String,
-    /// Where the token actually lives: the credential store, or a file path when
-    /// the system has no store and the plaintext fallback was used.
     /// True when the app runs from an unpacked portable folder, where the built-in
     /// updater cannot replace the binary in place.
     pub portable: bool,

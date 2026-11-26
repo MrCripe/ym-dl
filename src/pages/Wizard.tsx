@@ -68,7 +68,14 @@ export default function Wizard() {
 
   const proceed = async () => {
     if (!account) return;
-    await finishWizard(account);
+    // Reading the settings can fail, and an unhandled rejection here would leave
+    // the button looking dead.
+    try {
+      await finishWizard(account);
+    } catch (error) {
+      toast(String((error as Error).message), "error");
+      return;
+    }
     toast(t("wiz.hello", { name: account.name || account.login || "" }), "success");
   };
 

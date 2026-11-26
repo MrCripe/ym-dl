@@ -1,9 +1,13 @@
 import { create } from "zustand";
-import { api, subscribe, type AccountInfo, type JobProgress, type Settings, type SourceInfo, type TrackState } from "./api";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { api, subscribe, type AccountInfo, type Batch, type JobProgress, type LibraryTrack, type LibrarySort, type Settings, type SourceInfo, type TrackState } from "./api";
 import { findUpdate, installUpdate, type AvailableUpdate } from "./update";
 import { resolveLang, translate } from "./i18n";
 
-export type Page = "home" | "downloads" | "settings";
+export type Page = "home" | "library" | "downloads" | "settings";
+
+/// One selection waiting in the download queue, with the label it shows.
+export type QueuedBatch = { id: number; title: string; count: number; batch: Batch };
 export type Toast = { id: number; text: string; tone: "info" | "error" | "success"; action?: string; page?: Page };
 
 type LogLine = { level: string; message: string; time: number };
@@ -32,6 +36,29 @@ type State = {
   updateProgress: number | null;
   /** Portable unpack: the built-in updater cannot replace the binary in place. */
   portable: boolean;
+  /** The library track currently in the player, if any. */
+  playing: LibraryTrack | null;
+  /// Kept in the store so the player bar survives navigation without restarting.
+  paused: boolean;
+  /// Bumped on every "play this" click. Clicking the row that is already in the
+  /// bar leaves `playing` unchanged, so the bar needs a second signal to restart.
+  playNonce: number;
+  /// How the library list is ordered and narrowed. Kept here because the shell
+  /// remounts a page on every switch to replay its entrance animation.
+  librarySort: LibrarySort;
+  libraryDescending: boolean;
+  libraryFilter: string;
+  setLibrarySort: (sort: LibrarySort) => void;
+  setLibraryDescending: (descending: boolean) => void;
+  setLibraryFilter: (filter: string) => void;
+  /// Selections added with "В очередь": remembered but not started until the
+  /// user presses "Начать".
+  queue: QueuedBatch[];
+  enqueue: () => void;
+  dequeue: (id: number) => void;
+  clearQueue: () => void;
+  setPlaying: (track: LibraryTrack | null) => void;
+  setPaused: (paused: boolean) => void;
 
   init: () => Promise<void>;
   setPage: (page: Page) => void;
@@ -55,6 +82,10 @@ type State = {
 
 let toastId = 0;
 let saveTimer = 0;
+/// The live event subscription, so `init` can replace it instead of stacking.
+let unsubscribe: UnlistenFn | null = null;
+/// Order of settings writes: two overlapping saves must not land out of order.
+let saveSequence = 0;
 
 /**
  * Translation for code that runs outside a component.
@@ -87,11 +118,22 @@ export const useApp = create<State>((set, get) => ({
   availableUpdate: null,
   updateProgress: null,
   portable: false,
+  playing: null,
+  paused: false,
+  playNonce: 0,
+  queue: [],
+  librarySort: "added",
+  libraryDescending: true,
+  libraryFilter: "",
 
   init: async () => {
+    // A second init (the retry button, or StrictMode running the effect twice)
+    // must not leave the previous set of listeners behind: every log line and
+    // every toast would then arrive twice.
+    unsubscribe?.();
     // Registered before anything can fail: the download page must hear the job
     // even when reading the settings below goes wrong.
-    await subscribe({
+    unsubscribe = await subscribe({
       onTrack: (state) =>
         set((current) => {
           const tracks = [...current.tracks];
@@ -186,6 +228,40 @@ export const useApp = create<State>((set, get) => ({
 
   setPage: (page) => set({ page }),
 
+  setPlaying: (track) => {
+    // A new track always starts from the top, playing.
+    set((current) => ({ playing: track, paused: false, playNonce: current.playNonce + 1 }));
+  },
+
+  setPaused: (paused) => set({ paused }),
+
+  setLibrarySort: (librarySort) => set({ librarySort }),
+  setLibraryDescending: (libraryDescending) => set({ libraryDescending }),
+  setLibraryFilter: (libraryFilter) => set({ libraryFilter }),
+
+  enqueue: () => {
+    const { source, selected } = get();
+    if (!source || selected.size === 0) {
+      get().toast(tr(get().settings?.language, "home.enqueueEmpty"), "info");
+      return;
+    }
+    const trackIds = source.tracks
+      .filter((track) => selected.has(track.id))
+      .map((track) => track.id);
+    const title = source.kind === "likes" ? tr(get().settings?.language, "home.likesOwn") : source.title;
+    set((current) => ({
+      queue: [
+        ...current.queue,
+        { id: Date.now() + current.queue.length, title, count: trackIds.length, batch: { trackIds, sourceKind: source.kind } },
+      ],
+    }));
+    get().toast(tr(get().settings?.language, "home.enqueued", { title, count: trackIds.length }), "success");
+  },
+
+  dequeue: (id) => set((current) => ({ queue: current.queue.filter((item) => item.id !== id) })),
+
+  clearQueue: () => set({ queue: [] }),
+
   patchSettings: (values) => {
     set((current) => {
       const base = current.settingsDraft ?? current.settings;
@@ -205,7 +281,11 @@ export const useApp = create<State>((set, get) => ({
   saveSettingsDraft: async () => {
     const draft = get().settingsDraft ?? get().settings;
     if (!draft) return;
+    const mine = ++saveSequence;
     const saved = await api.saveSettings(draft);
+    // An autosave and a flush can overlap; only the newest write may decide what
+    // is stored, otherwise the older answer rolls the settings back.
+    if (mine !== saveSequence) return;
     // Keep edits made while the request was in flight: replacing the draft with
     // the saved copy would silently discard whatever the user typed meanwhile.
     set((current) =>
@@ -290,12 +370,33 @@ export const useApp = create<State>((set, get) => ({
     }),
 
   start: async () => {
-    const { selected, source } = get();
-    if (!source || selected.size === 0) return;
-    const order = source.tracks.filter((track) => selected.has(track.id)).map((track) => track.id);
+    const { selected, source, queue } = get();
+    // The queue runs first, then whatever is selected right now. A track can sit
+    // in both — it was added to the queue and left selected — so the second copy
+    // is dropped instead of downloading the same file twice.
+    const batches: Batch[] = queue.map((item) => item.batch);
+    if (source && selected.size > 0) {
+      batches.push({
+        trackIds: source.tracks.filter((track) => selected.has(track.id)).map((track) => track.id),
+        sourceKind: source.kind,
+      });
+    }
+    const seen = new Set<string>();
+    const unique: Batch[] = [];
+    for (const batch of batches) {
+      const trackIds = batch.trackIds.filter((id) => !seen.has(id));
+      trackIds.forEach((id) => seen.add(id));
+      if (trackIds.length > 0) unique.push({ sourceKind: batch.sourceKind, trackIds });
+    }
+    if (unique.length === 0) return;
+    // The queue is emptied only once the backend accepted the job: a failed
+    // start must not throw away selections the user spent time collecting.
     set({ downloading: true, tracks: [], logs: [], page: "downloads", progress: null });
     try {
-      await api.start(order);
+      // The source kind picks the path template: likes, an album and a loose
+      // track each has its own idea of where the file belongs.
+      await api.start(unique);
+      set({ queue: [] });
     } catch (error) {
       set({ downloading: false });
       get().toast(String((error as Error).message), "error");
@@ -303,7 +404,14 @@ export const useApp = create<State>((set, get) => ({
   },
 
   stop: async () => {
-    const accepted = await api.stop();
+    let accepted: boolean;
+    try {
+      accepted = await api.stop();
+    } catch (error) {
+      // A rejected stop is not a stopped job: say so instead of pretending.
+      get().toast(String((error as Error).message), "error");
+      return;
+    }
     if (!accepted) {
       // Nothing was running: saying "stopping" would be a lie.
       set({ downloading: false });

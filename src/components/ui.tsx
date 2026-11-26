@@ -1,4 +1,4 @@
-import { useId, useState, type CSSProperties, type ReactNode } from "react";
+import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 const FILLED: CSSProperties = {
   fontVariationSettings: '"FILL" 1, "wght" 500, "GRAD" 0, "opsz" 24',
@@ -281,6 +281,13 @@ export function Slider({
   );
 }
 
+/**
+ * Segmented control with a sliding indicator.
+ *
+ * The pill moves between options instead of blinking from one to the next: the
+ * position is measured from the selected button, so the transition follows the
+ * real width of each label rather than a guess.
+ */
 export function Segmented<T extends string | number>({
   options,
   value,
@@ -290,8 +297,32 @@ export function Segmented<T extends string | number>({
   value: T;
   onChange: (value: T) => void;
 }) {
+  const group = useRef<HTMLDivElement | null>(null);
+  const [pill, setPill] = useState({ left: 0, width: 0, ready: false });
+
+  useLayoutEffect(() => {
+    const container = group.current;
+    if (!container) return;
+    const index = options.findIndex((option) => option.value === value);
+    const button = container.querySelectorAll("button")[index];
+    if (!button) return;
+    // `options` is an inline literal at every call site, so this effect runs on
+    // each parent render. Reading offsetLeft forces a layout; keeping the old
+    // object when nothing moved stops that from turning into a render loop.
+    setPill((previous) =>
+      previous.ready && previous.left === button.offsetLeft && previous.width === button.offsetWidth
+        ? previous
+        : { left: button.offsetLeft, width: button.offsetWidth, ready: true },
+    );
+  }, [value, options]);
+
   return (
-    <div className="segmented" role="group">
+    <div className="segmented" role="group" ref={group}>
+      <span
+        className={`segmented-pill${pill.ready ? " ready" : ""}`}
+        style={{ transform: `translateX(${pill.left}px)`, width: pill.width }}
+        aria-hidden
+      />
       {options.map((option) => (
         <button
           key={String(option.value)}
