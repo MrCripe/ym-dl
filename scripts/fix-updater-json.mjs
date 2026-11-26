@@ -7,20 +7,38 @@
 // signature check. Running after the release is published replaces those with the
 // real download links.
 //
+// The `notes` field is rewritten too: it is what the update dialog shows, and
+// tauri-action fills it from tauri.conf.json, so every version said the same
+// sentence instead of what changed.
+//
 // Usage: node scripts/fix-updater-json.mjs <owner/repo> <tag>
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const [repo, tag] = process.argv.slice(2);
 if (!repo || !tag) {
-  console.error("usage: node scripts/fix-updater-json.mjs <owner/repo> <tag>");
+  console.error("usage: fix-updater-json.mjs <owner/repo> <tag>");
   process.exit(2);
 }
 
 const gh = (args) =>
   execFileSync("gh", args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+
+/** The changelog section for one version, without its heading. */
+function sectionFor(text, version) {
+  const lines = text.split("\n");
+  const start = lines.findIndex((line) => line.trim() === `## ${version}`);
+  if (start === -1) return null;
+  const body = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^## /.test(lines[index])) break;
+    body.push(lines[index]);
+  }
+  const section = body.join("\n").trim();
+  return section.length > 0 ? section : null;
+}
 
 const release = JSON.parse(gh(["api", `repos/${repo}/releases/tags/${tag}`]));
 const assets = new Map(release.assets.map((asset) => [asset.name, asset]));
@@ -51,8 +69,16 @@ for (const [platform, entry] of Object.entries(manifest.platforms ?? {})) {
   }
 }
 
+// A missing changelog section is not fatal: the manifest still works, it just
+// keeps the generic sentence.
+const notes = sectionFor(readFileSync("CHANGELOG.md", "utf8"), tag.replace(/^v/, ""));
+if (notes && manifest.notes !== notes) {
+  manifest.notes = notes;
+  changed += 1;
+}
+
 if (changed === 0) {
-  console.log("latest.json уже указывает на download-ссылки");
+  console.log("latest.json уже актуален");
   process.exit(0);
 }
 
@@ -67,4 +93,4 @@ writeFileSync(out, JSON.stringify(manifest, null, 2));
 // to the new one. Deleting first makes the replacement unambiguous.
 gh(["api", "-X", "DELETE", `repos/${repo}/releases/assets/${manifestAsset.id}`]);
 gh(["release", "upload", tag, out, "--repo", repo]);
-console.log(`latest.json обновлён: ${changed} адрес(ов) заменены на download-ссылки`);
+console.log(`latest.json обновлён: ${changed} правк(и)`);
