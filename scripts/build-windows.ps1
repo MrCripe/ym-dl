@@ -1,4 +1,4 @@
-# Собирает ym-dl под Windows: установщик .msi и .exe (NSIS).
+# Собирает ym-dl под Windows: установщик .exe (NSIS).
 # Запуск из корня репозитория: .\scripts\build-windows.ps1
 
 $ErrorActionPreference = 'Stop'
@@ -24,7 +24,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Сборка завершилась с кодом $LASTEXITCODE" }
 
     $bundle = Join-Path $root 'src-tauri\target\release\bundle'
-    Get-ChildItem -Path $bundle -Recurse -Include *.msi, *.exe |
+    Get-ChildItem -Path $bundle -Recurse -Include *.exe |
         Select-Object FullName, @{n = 'МиБ'; e = { [math]::Round($_.Length / 1MB, 1) } } |
         Format-Table -AutoSize
 }

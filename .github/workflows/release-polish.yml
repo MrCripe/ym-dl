@@ -45,6 +45,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Rename the assets and drop the .msi
+        run: node scripts/rename-assets.mjs "$REPO" "$TAG"
+
       - name: Point latest.json at the release assets
         run: node scripts/fix-updater-json.mjs "$REPO" "$TAG"
 

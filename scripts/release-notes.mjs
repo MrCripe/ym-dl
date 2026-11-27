@@ -50,18 +50,18 @@ const files = `
 
 | Что у вас | Файл |
 | --- | --- |
-| Windows 10/11, установить | \`ym-dl_${version}_x64-setup.exe\` (или \`.msi\`) |
-| Windows, без установки | \`ym-dl_${version}_windows-portable.zip\` — распаковать и запустить |
-| Linux, без установки | \`ym-dl_${version}_linux-portable.tar.gz\` — внутри AppImage со всеми библиотеками |
-| Linux, AppImage отдельно | \`ym-dl_${version}_amd64.AppImage\` |
-| Linux, пакет | \`ym-dl_${version}_amd64.deb\` |
+| Windows 10/11, установить | \`ym-dl_${version}_windows_x64-setup.exe\` |
+| Windows, без установки | \`ym-dl_${version}_windows_x64-portable.zip\` — распаковать и запустить |
+| macOS, Apple Silicon | \`ym-dl_${version}_macos_aarch64.dmg\` |
+| Linux, без установки | \`ym-dl_${version}_linux_amd64-portable.tar.gz\` — внутри AppImage со всеми библиотеками |
+| Linux, AppImage отдельно | \`ym-dl_${version}_linux_amd64.AppImage\` |
+| Linux, пакет | \`ym-dl_${version}_linux_amd64.deb\` |
 
 Установленное приложение обновляется само: когда выходит новая версия, внизу
 экрана появляется кнопка «Обновить». Проверить вручную можно в «Настройки →
 Обновления → Проверить».
 
-Без ffmpeg файлы сохраняются как \`.m4a\` (AAC). С ffmpeg lossless-треки
-перепаковываются в \`.flac\`.
+Ничего доустанавливать не нужно: FLAC, AAC и MP3 приложение разбирает само.
 `;
 
 const body = notes
