@@ -26,6 +26,13 @@ pub struct Artist {
     pub op_image: Option<String>,
 }
 
+/// A record label, sent either as an object or as a bare string.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LabelRef {
+    #[serde(default)]
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackPosition {
@@ -52,6 +59,9 @@ pub struct AlbumRef {
     pub track_position: Option<TrackPosition>,
     #[serde(default)]
     pub track_count: Option<u32>,
+    /// Record label, written as the `label` tag when the service sends one.
+    #[serde(default)]
+    pub labels: Vec<LabelRef>,
     #[serde(default)]
     pub artists: Vec<Artist>,
     #[serde(default)]
@@ -82,6 +92,12 @@ pub struct Track {
     pub version: Option<String>,
     #[serde(default)]
     pub available: bool,
+    /// The service flags a track with an explicit content warning.
+    #[serde(default)]
+    pub explicit: bool,
+    /// Whether the whole album is flagged, which applies when the track is not.
+    #[serde(default)]
+    pub content_warning: Option<String>,
     #[serde(default)]
     pub duration_ms: Option<u64>,
     #[serde(default)]
@@ -460,7 +476,7 @@ pub struct ResolveProgress {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateEntry {
-    /// Stable identifier the UI translates: `app` or `ffmpeg`. A display name sent
+    /// Stable identifier the UI translates: `app`. A display name sent
     /// from here would stay Russian in an English interface.
     pub kind: String,
     pub name: String,
@@ -476,9 +492,6 @@ pub struct UpdateEntry {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvironmentInfo {
-    pub ffmpeg: bool,
-    pub ffprobe: bool,
-    pub ffmpeg_path: String,
     pub app_version: String,
     pub config_path: String,
     /// True when the app runs from an unpacked portable folder, where the built-in

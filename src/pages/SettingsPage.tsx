@@ -518,7 +518,7 @@ export default function SettingsPage() {
         <Section icon="audio_file" title={t("set.flac")}>
           <Row
             name={t("set.extractFlac")}
-            desc={t("set.extractFlacDesc")}
+            desc={t("set.extractFlacDescNoFfmpeg")}
             control={
               <Switch
                 checked={draft.extractFlac}
@@ -527,28 +527,51 @@ export default function SettingsPage() {
               />
             }
           />
+        </Section>
+
+        <Section icon="queue_music" title={t("set.extras")}>
           <Row
-            name={t("set.ffmpeg")}
-            desc={
-              env?.ffmpeg && env?.ffprobe ? env.ffmpegPath : t("set.ffmpegMissing")
-            }
+            name={t("set.sidecarCover")}
+            desc={t("set.sidecarCoverDesc")}
             control={
-              env?.ffmpeg && env?.ffprobe ? (
-                <Badge tone="success" icon="check">
-                  {t("set.ffmpegFound")}
-                </Badge>
-              ) : (
-                <Button
-                  variant="tonal"
-                  size="compact"
-                  icon="help"
-                  onClick={() =>
-                    void openUrl("https://www.gyan.dev/ffmpeg/builds/").catch(() => undefined)
-                  }
-                >
-                  {t("set.ffmpegHow")}
-                </Button>
-              )
+              <Switch
+                checked={draft.sidecarCover}
+                label={t("set.sidecarCover")}
+                onChange={(value) => patch({ sidecarCover: value })}
+              />
+            }
+          />
+          <Row
+            name={t("set.writeM3u")}
+            desc={t("set.writeM3uDesc")}
+            control={
+              <Switch
+                checked={draft.writeM3u}
+                label={t("set.writeM3u")}
+                onChange={(value) => patch({ writeM3u: value })}
+              />
+            }
+          />
+          <Row
+            name={t("set.mp3Copy")}
+            desc={t("set.mp3CopyDesc")}
+            control={
+              <Switch
+                checked={draft.mp3Copy}
+                label={t("set.mp3Copy")}
+                onChange={(value) => patch({ mp3Copy: value })}
+              />
+            }
+          />
+          <Row
+            name={t("set.extendedTags")}
+            desc={t("set.extendedTagsDesc")}
+            control={
+              <Switch
+                checked={draft.extendedTags}
+                label={t("set.extendedTags")}
+                onChange={(value) => patch({ extendedTags: value })}
+              />
             }
           />
         </Section>
@@ -636,12 +659,8 @@ export default function SettingsPage() {
           {updates?.map((entry) => (
             <div key={entry.kind} className="update-row">
               <div className="names">
-                <div className="md-body">
-                  {entry.kind === "app" ? t("set.appName") : "ffmpeg"}
-                </div>
-                <div className="md-body-sm muted">
-                  {entry.kind === "app" ? entry.detail : t("set.ffmpegSeparate")}
-                </div>
+                <div className="md-body">{t("set.appName")}</div>
+                <div className="md-body-sm muted">{entry.detail}</div>
               </div>
               <Badge tone="neutral">
                 {t("set.yours")} {entry.installed}

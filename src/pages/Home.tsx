@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { api, type SearchResults } from "../lib/api";
-import { useApp } from "../lib/store";
+import { linksIn, useApp } from "../lib/store";
 import { useT } from "../lib/i18n";
 import { Badge, Button, Checkbox, Icon, IconButton, TextField } from "../components/ui";
 
@@ -131,6 +131,8 @@ export default function Home() {
   const enqueue = useApp((state) => state.enqueue);
   const dequeue = useApp((state) => state.dequeue);
   const clearQueue = useApp((state) => state.clearQueue);
+  const moveQueueItem = useApp((state) => state.moveQueueItem);
+  const addLinks = useApp((state) => state.addLinks);
   const toast = useApp((state) => state.toast);
 
   const [url, setUrl] = useState(settings?.lastUrl ?? "");
@@ -251,13 +253,27 @@ export default function Home() {
               )}
             </div>
             <div className="queue-list">
-              {queue.map((item) => (
+              {queue.map((item, index) => (
                 <div className="queue-item" key={item.id}>
                   <Icon name="music_note" />
                   <span className="queue-item-title truncate">{item.title}</span>
                   <span className="queue-item-count">
                     {t("home.trackCount", { count: item.count })}
                   </span>
+                  <IconButton
+                    icon="arrow_upward"
+                    size="small"
+                    label={t("home.queueUp")}
+                    disabled={index === 0}
+                    onClick={() => moveQueueItem(item.id, -1)}
+                  />
+                  <IconButton
+                    icon="arrow_downward"
+                    size="small"
+                    label={t("home.queueDown")}
+                    disabled={index === queue.length - 1}
+                    onClick={() => moveQueueItem(item.id, 1)}
+                  />
                   <IconButton
                     icon="close"
                     size="small"
@@ -298,8 +314,16 @@ export default function Home() {
               variant="tonal"
               onClick={async () => {
                 try {
-                  const text = await readText();
-                  if (text?.trim()) {
+                  const text = (await readText()) ?? "";
+                  const links = linksIn(text);
+                  // One link is something to look at before downloading; several
+                  // are a batch, and filling the field with all of them would
+                  // only leave the user to split them by hand.
+                  if (links.length > 1) {
+                    void addLinks(text);
+                  } else if (links.length === 1) {
+                    setUrl(links[0]);
+                  } else if (text.trim()) {
                     setUrl(text.trim());
                   } else {
                     // Silence after a click reads as "nothing happened".
@@ -318,6 +342,8 @@ export default function Home() {
               {loading ? t("home.loading") : t("home.show")}
             </Button>
           </div>
+
+          <p className="lib-hint">{t("home.linksHint")}</p>
 
           <div className="divider" />
 

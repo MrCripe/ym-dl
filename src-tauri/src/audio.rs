@@ -105,6 +105,14 @@ fn avoid_reserved(name: &str) -> String {
     }
 }
 
+/// A single path component with everything a filesystem rejects replaced.
+///
+/// Public because the playlist file is named after the album, and that name comes
+/// from the service just like a track title does.
+pub fn sanitize_file_name(value: &str) -> String {
+    sanitize(value, false)
+}
+
 fn sanitize(value: &str, unsafe_path: bool) -> String {
     let trimmed = value.trim();
     if unsafe_path {
@@ -164,6 +172,13 @@ pub struct TagPayload<'a> {
     /// International Standard Recording Code, when the service provides one.
     /// Yandex usually does not, so this stays empty more often than not.
     pub isrc: Option<String>,
+    /// Record label, from the album.
+    pub label: Option<String>,
+    /// `1` when the service flags the track as explicit, `0` when it is clean,
+    /// `None` when the service said nothing and the tag stays empty.
+    pub explicit: Option<bool>,
+    /// Composer or lyricist, when the service credits one.
+    pub composer: Option<String>,
     pub cover: Option<Vec<u8>>,
     pub lyrics: Option<String>,
     pub url: String,
@@ -198,6 +213,23 @@ impl TagPayload<'_> {
             disc_number: position.and_then(|p| p.volume),
             genre: album.and_then(|a| a.genre.clone()),
             isrc: track.isrc.clone(),
+            label: album
+                .map(|album| {
+                    album
+                        .labels
+                        .iter()
+                        .map(|label| label.name.clone())
+                        .filter(|name| !name.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .filter(|labels| !labels.is_empty()),
+            // The track carries its own flag; the album's warning applies when
+            // the track has none, which is how the service marks a whole record.
+            // No flag at all leaves the tag empty rather than claiming "clean".
+            explicit: (track.explicit || track.content_warning.is_some())
+                .then_some(track.explicit || track.content_warning.as_deref() == Some("explicit")),
+            composer: None,
             cover: None,
             lyrics: None,
             url,
@@ -223,139 +255,14 @@ pub fn part_path(final_path: &Path) -> PathBuf {
     final_path.with_file_name(format!(".{stem}.part{extension}"))
 }
 
+/// Writes every tag the payload carries into the file.
+///
+/// MP4 used to go through ffmpeg because an older lofty rewrote the `moov` atom
+/// without shifting the `stco` chunk offsets, which left the file unplayable.
+/// Lofty 0.22 updates those offsets itself, so every container is handled here
+/// and the app needs no external binary.
 pub fn write_tags(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()> {
-    // lofty rewrites the MP4 `moov` atom but does not shift the `stco` chunk
-    // offsets when the atom grows, so every sample points a few hundred bytes
-    // early and the file no longer decodes. ffmpeg re-muxes the stream and keeps
-    // the table consistent, so MP4 goes through it — and without ffmpeg an MP4 is
-    // left alone rather than tagged into a file that will not play.
-    let is_mp4 = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "m4a" | "mp4" | "m4b"))
-        .unwrap_or(false);
-    if is_mp4 {
-        if !crate::ffmpeg::available() {
-            anyhow::bail!("для тегов MP4 нужен ffmpeg — файл оставлен без изменений");
-        }
-        write_tags_ffmpeg(path, payload)
-    } else {
-        write_tags_lofty(path, payload)
-    }
-}
-
-/// Tag names ffmpeg maps onto the MP4 `ilst` box.
-fn metadata_pairs(payload: &TagPayload<'_>) -> Vec<(String, String)> {
-    let mut pairs: Vec<(String, String)> = Vec::new();
-    let mut push = |key: &str, value: &str| {
-        if !value.trim().is_empty() {
-            pairs.push((key.to_string(), value.to_string()));
-        }
-    };
-    push("title", &payload.title);
-    push("artist", &join_artists(&payload.artist, payload.compatibility_level));
-    push(
-        "album_artist",
-        &join_artists(&payload.album_artist, payload.compatibility_level),
-    );
-    push("album", &payload.album);
-    if let Some(year) = payload.year {
-        push("date", &year.to_string());
-    }
-    if let Some(number) = payload.track_number {
-        push("track", &number.to_string());
-    }
-    if let Some(disc) = payload.disc_number {
-        push("disc", &disc.to_string());
-    }
-    if let Some(genre) = payload.genre.as_deref() {
-        push("genre", genre);
-    }
-    if let Some(isrc) = payload.isrc.as_deref() {
-        push("ISRC", isrc);
-    }
-    if let Some(lyrics) = payload.lyrics.as_deref() {
-        push("lyrics", lyrics);
-    }
-    push("comment", &payload.url);
-    pairs
-}
-
-/// Writes tags by re-muxing with ffmpeg: the audio is copied, never re-encoded.
-fn write_tags_ffmpeg(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()> {
-    use std::process::Command;
-    let ffmpeg = crate::ffmpeg::ffmpeg_path()
-        .ok_or_else(|| anyhow::anyhow!("ffmpeg не найден"))?;
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let stem = path
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().to_string())
-        .unwrap_or_else(|| "track".into());
-
-    // The cover has to be a real file on disk for ffmpeg to read it. The name is
-    // per-track: downloads run concurrently into one folder, and a shared name
-    // would let one track overwrite or delete the cover another is still reading.
-    let cover_path = payload.cover.as_ref().map(|bytes| {
-        let is_png = bytes.starts_with(&[0x89, b'P', b'N', b'G']);
-        let name = if is_png {
-            format!(".{stem}.cover.png")
-        } else {
-            format!(".{stem}.cover.jpg")
-        };
-        let cover = dir.join(name);
-        std::fs::write(&cover, bytes).map(|()| cover)
-    });
-    let cover_path = match cover_path {
-        Some(Ok(cover)) => Some(cover),
-        Some(Err(error)) => {
-            crate::startup_log::write(&format!("обложка не записалась: {error}"));
-            None
-        }
-        None => None,
-    };
-
-    let output = path.with_file_name(format!(".{stem}.tagged{ext}",
-        ext = path.extension().and_then(|e| e.to_str()).map(|e| format!(".{e}")).unwrap_or_default()));
-
-    let mut command = Command::new(&ffmpeg);
-    command.args(["-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-i"]);
-    command.arg(path);
-    if let Some(cover) = &cover_path {
-        command.arg("-i").arg(cover);
-    }
-    command.args(["-map", "0:a"]);
-    if cover_path.is_some() {
-        command.args(["-map", "1:v", "-c:v", "copy", "-disposition:v", "attached_pic"]);
-    }
-    command.args(["-c:a", "copy", "-map_metadata", "0"]);
-    // The muxer is chosen from the extension, and `.m4a` picks `ipod`, which
-    // refuses a FLAC stream — the tag pass then failed for every lossless track.
-    command.args(["-f", "mp4"]);
-    for (key, value) in metadata_pairs(payload) {
-        command.arg("-metadata").arg(format!("{key}={value}"));
-    }
-    command.arg(&output);
-
-    let run = crate::ffmpeg::hidden(&mut command)
-        .output()
-        .map_err(|error| anyhow::anyhow!("ffmpeg не запустился: {error}"))?;
-    if let Some(cover) = &cover_path {
-        let _ = std::fs::remove_file(cover);
-    }
-    if !run.status.success() || !output.is_file() {
-        let _ = std::fs::remove_file(&output);
-        anyhow::bail!(
-            "ffmpeg не записал теги: {}",
-            String::from_utf8_lossy(&run.stderr).trim()
-        );
-    }
-    // Only replace the original once the new file is known to decode.
-    if !crate::ffmpeg::decodes(&output) {
-        let _ = std::fs::remove_file(&output);
-        anyhow::bail!("файл после записи тегов перестал читаться");
-    }
-    std::fs::rename(&output, path)?;
-    Ok(())
+    write_tags_lofty(path, payload)
 }
 
 /// Writes only the lyrics tag into a file that is already tagged, leaving every
@@ -365,51 +272,7 @@ fn write_tags_ffmpeg(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()
 /// already written and tagged by then. Re-running the full tag pass would re-mux
 /// every file and re-download covers for nothing.
 pub fn write_lyrics(path: &Path, text: &str) -> anyhow::Result<()> {
-    let is_mp4 = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "m4a" | "mp4" | "m4b"))
-        .unwrap_or(false);
-    if is_mp4 {
-        if !crate::ffmpeg::available() {
-            anyhow::bail!("для тегов MP4 нужен ffmpeg");
-        }
-        return write_lyrics_ffmpeg(path, text);
-    }
     write_lyrics_lofty(path, text)
-}
-
-fn write_lyrics_ffmpeg(path: &Path, text: &str) -> anyhow::Result<()> {
-    use std::process::Command;
-    let ffmpeg = crate::ffmpeg::ffmpeg_path().ok_or_else(|| anyhow::anyhow!("ffmpeg не найден"))?;
-    let stem = path
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().to_string())
-        .unwrap_or_else(|| "track".into());
-    let output = path.with_file_name(format!(".{stem}.lyrics.m4a"));
-    let mut command = Command::new(&ffmpeg);
-    command.args(["-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-i"]);
-    command.arg(path);
-    // `-map 0` keeps the embedded cover; `-map_metadata 0` keeps the other tags.
-    command.args(["-map", "0", "-c", "copy", "-map_metadata", "0"]);
-    command.args(["-f", "mp4", "-metadata"]).arg(format!("lyrics={text}"));
-    command.arg(&output);
-    let run = crate::ffmpeg::hidden(&mut command)
-        .output()
-        .map_err(|error| anyhow::anyhow!("ffmpeg не запустился: {error}"))?;
-    if !run.status.success() || !output.is_file() {
-        let _ = std::fs::remove_file(&output);
-        anyhow::bail!(
-            "ffmpeg не записал текст: {}",
-            String::from_utf8_lossy(&run.stderr).trim()
-        );
-    }
-    if !crate::ffmpeg::decodes(&output) {
-        let _ = std::fs::remove_file(&output);
-        anyhow::bail!("файл после записи текста перестал читаться");
-    }
-    std::fs::rename(&output, path)?;
-    Ok(())
 }
 
 fn write_lyrics_lofty(path: &Path, text: &str) -> anyhow::Result<()> {
@@ -437,7 +300,8 @@ fn write_lyrics_lofty(path: &Path, text: &str) -> anyhow::Result<()> {
     })();
     match result {
         Ok(()) => {
-            if crate::ffmpeg::available() && !crate::ffmpeg::decodes(&scratch) {
+            crate::mp4::repair_chunk_offsets(path, &scratch)?;
+            if !crate::transcode::decodes(&scratch) {
                 let _ = std::fs::remove_file(&scratch);
                 anyhow::bail!("файл после записи текста перестал читаться");
             }
@@ -468,7 +332,10 @@ fn write_tags_lofty(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()>
     let result = tag_in_place_lofty(&scratch, payload);
     match result {
         Ok(()) => {
-            if crate::ffmpeg::available() && !crate::ffmpeg::decodes(&scratch) {
+            // An MP4 whose `moov` sits before `mdat` has its chunk offsets left
+            // pointing at the old audio position after the tag block grows.
+            crate::mp4::repair_chunk_offsets(path, &scratch)?;
+            if !crate::transcode::decodes(&scratch) {
                 let _ = std::fs::remove_file(&scratch);
                 anyhow::bail!("файл после записи тегов перестал читаться");
             }
@@ -496,7 +363,7 @@ fn open_tagged(path: &Path) -> anyhow::Result<lofty::file::TaggedFile> {
     Ok(probe.read()?)
 }
 
-fn tag_in_place_lofty(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()> {
+pub fn tag_in_place_lofty(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()> {
     let mut tagged = open_tagged(path)?;
     let tag_type = tagged.primary_tag_type();
     let tag = tagged.primary_tag_mut();
@@ -531,6 +398,19 @@ fn tag_in_place_lofty(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<(
     }
     if let Some(isrc) = payload.isrc.clone().filter(|code| !code.is_empty()) {
         tag.insert_text(ItemKey::Isrc, isrc);
+    }
+    if let Some(label) = payload.label.clone().filter(|text| !text.is_empty()) {
+        tag.insert_text(ItemKey::Label, label);
+    }
+    if let Some(composer) = payload.composer.clone().filter(|text| !text.is_empty()) {
+        tag.insert_text(ItemKey::Composer, composer);
+    }
+    if let Some(explicit) = payload.explicit {
+        // The tag is a free-form string across formats; `1` is what players read.
+        tag.insert_text(
+            ItemKey::Unknown("ITUNESADVISORY".into()),
+            if explicit { "1".to_string() } else { "0".to_string() },
+        );
     }
     if let Some(lyrics) = payload.lyrics.clone().filter(|l| !l.is_empty()) {
         tag.insert_text(ItemKey::Lyrics, lyrics);
@@ -573,12 +453,20 @@ pub struct FileMetadata {
     pub album: String,
     pub genre: String,
     pub isrc: String,
+    pub label: String,
+    pub composer: String,
+    pub explicit: Option<bool>,
     pub year: Option<i32>,
     pub track_number: Option<u32>,
     pub disc_number: Option<u32>,
     pub duration_ms: u64,
     pub codec: String,
     pub bitrate: u32,
+    /// Stream shape, needed to build a STREAMINFO block when a container does
+    /// not carry one and to set up the MP3 encoder.
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub bits_per_sample: u32,
     /// The Yandex page URL written into the comment, when the file has one.
     pub comment: String,
     /// Lyrics already embedded in the file. A quality upgrade rewrites the tags
@@ -596,9 +484,12 @@ pub fn read_file_metadata(path: &Path) -> anyhow::Result<FileMetadata> {
     } else if format!("{file_type:?}").contains("Mpeg") {
         "MP3".to_string()
     } else if format!("{file_type:?}").contains("Mp4") {
-        // The container is MP4; whether it holds AAC or FLAC is decided by the
-        // bitrate the library compares later.
-        "AAC".to_string()
+        // MP4 does not say in its tag block whether it holds AAC or FLAC; the
+        // sample entry does, so that is read from the container. The old check
+        // reported every `.m4a` as AAC, understating a lossless file.
+        crate::mp4::codec_of_file(path)
+            .map(|codec| codec.name().to_string())
+            .unwrap_or_else(|| "AAC".to_string())
     } else {
         format!("{file_type:?}")
     };
@@ -607,6 +498,9 @@ pub fn read_file_metadata(path: &Path) -> anyhow::Result<FileMetadata> {
         duration_ms: properties.duration().as_millis() as u64,
         bitrate: properties.audio_bitrate().unwrap_or(0),
         codec,
+        sample_rate: properties.sample_rate().unwrap_or(0),
+        channels: properties.channels().unwrap_or(0) as u32,
+        bits_per_sample: properties.bit_depth().map(u32::from).unwrap_or(0),
         ..Default::default()
     };
 
@@ -620,6 +514,11 @@ pub fn read_file_metadata(path: &Path) -> anyhow::Result<FileMetadata> {
     meta.album = text(ItemKey::AlbumTitle);
     meta.genre = text(ItemKey::Genre);
     meta.isrc = text(ItemKey::Isrc);
+    meta.label = text(ItemKey::Label);
+    meta.composer = text(ItemKey::Composer);
+    meta.explicit = tag
+        .get_string(&ItemKey::Unknown("ITUNESADVISORY".into()))
+        .map(|value| value.trim() == "1");
     meta.comment = text(ItemKey::Comment);
     meta.lyrics = text(ItemKey::Lyrics);
     meta.year = tag.year().and_then(|year| i32::try_from(year).ok());
@@ -630,9 +529,9 @@ pub fn read_file_metadata(path: &Path) -> anyhow::Result<FileMetadata> {
 
 /// The embedded cover of a file, if it has one.
 ///
-/// Editing a tag rewrites the whole tag block, and for MP4 that pass goes through
-/// ffmpeg, which drops any picture it is not given. Reading it back first is what
-/// keeps a cover from disappearing the moment someone fixes a typo in a title.
+/// Editing a tag rewrites the whole tag block, and a writer that is not given a
+/// picture drops the one that was there. Reading it back first is what keeps a
+/// cover from disappearing the moment someone fixes a typo in a title.
 pub fn read_cover(path: &Path) -> Option<Vec<u8>> {
     let tagged = open_tagged(path).ok()?;
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
@@ -716,11 +615,70 @@ mod tests {
                 genre: Some("rock".into()),
                 meta_type: Some("music".into()),
                 available: true,
+                labels: Vec::new(),
             }],
             lyrics_info: None,
             cover_uri: None,
             isrc: None,
+            explicit: false,
+            content_warning: None,
         }
+    }
+
+    /// Tagging must not move the audio.
+    ///
+    /// The tagger grows `moov` and pushes `mdat` down the file; on a real 37 MB
+    /// download it left every chunk offset behind, so the file decoded to noise
+    /// and the tags were dropped. The faststart fixture is the same layout:
+    /// `moov` before `mdat`, which is what the service sends.
+    #[test]
+    fn tagging_keeps_the_audio_of_a_faststart_mp4() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("tag-faststart-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures");
+        let source = fixtures.join("flac-mp4-faststart.m4a");
+        let target = dir.join("tagged.m4a");
+        std::fs::copy(&source, &target).unwrap();
+
+        let before = dir.join("before.flac");
+        crate::mp4::extract_flac(&source, &before).unwrap();
+
+        let payload = TagPayload {
+            title: "Probe".into(),
+            artist: vec!["Someone".into()],
+            album_artist: Vec::new(),
+            album: "Album".into(),
+            year: Some(2024),
+            track_number: Some(1),
+            disc_number: Some(1),
+            genre: Some("rock".into()),
+            isrc: None,
+            label: None,
+            explicit: None,
+            composer: None,
+            cover: None,
+            lyrics: Some("[00:01.00] line".into()),
+            url: "https://example.com".into(),
+            compatibility_level: 1,
+            _marker: std::marker::PhantomData,
+        };
+        write_tags(&target, &payload).expect("the tag write must succeed");
+
+        assert!(crate::transcode::decodes(&target), "the tagged file must decode");
+        let summary = read_tags(&target).expect("the tags must be readable");
+        assert!(summary.contains("Probe"), "the title did not land: {summary}");
+
+        let after = dir.join("after.flac");
+        crate::mp4::extract_flac(&target, &after).unwrap();
+        assert_eq!(
+            std::fs::read(&before).unwrap(),
+            std::fs::read(&after).unwrap(),
+            "tagging changed the audio stream"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -760,41 +718,35 @@ mod tests {
 #[cfg(test)]
 mod tag_tests {
     use super::*;
-    use std::process::Command;
 
-    /// A real MP4 with a real audio stream, so the tagger meets the same file the
-    /// download engine produces. Returns `None` when ffmpeg is not installed.
+    /// Real MP4 files, committed under `tests/fixtures` and copied in per test.
     ///
-    /// `faststart` puts `moov` before `mdat`, which is the layout Yandex serves and
-    /// the one a tagger can corrupt by growing `moov` without shifting the chunk
-    /// offsets. The default layout hides that bug, so both are exercised.
-    fn make_m4a(dir: &Path, faststart: bool) -> Option<PathBuf> {
-        let name = if faststart { "source-front.m4a" } else { "source.m4a" };
-        let path = dir.join(name);
-        let mut command = Command::new("ffmpeg");
-        command
-            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
-            .args(["-i", "anullsrc=r=44100:cl=stereo", "-t", "0.2"])
-            .args(["-c:a", "aac", "-b:a", "64k"]);
-        if faststart {
-            command.args(["-movflags", "+faststart"]);
-        }
-        let status = command.arg(&path).status().ok()?;
-        status.success().then_some(path)
+    /// They used to be produced by calling ffmpeg, which meant the tests were
+    /// skipped wherever it was not installed — including CI, so the tagger's most
+    /// important regression went unchecked. A few kilobytes in the repository make
+    /// the tests run everywhere.
+    fn fixture(name: &str, dir: &Path) -> PathBuf {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(name);
+        let target = dir.join(name);
+        std::fs::copy(&source, &target).expect("тестовый файл должен скопироваться");
+        target
     }
 
-    /// A FLAC stream inside an MP4 container, which is exactly what the lossless
-    /// download produces before the FLAC is extracted.
-    fn make_flac_in_mp4(dir: &Path) -> Option<PathBuf> {
-        let path = dir.join("source-flac.m4a");
-        let status = Command::new("ffmpeg")
-            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
-            .args(["-i", "anullsrc=r=44100:cl=stereo", "-t", "0.2"])
-            .args(["-c:a", "flac", "-f", "mp4"])
-            .arg(&path)
-            .status()
-            .ok()?;
-        status.success().then_some(path)
+    /// A file the tagger can meet: `aac-front` has `moov` before `mdat`, the
+    /// layout Yandex serves and the one a tagger can corrupt by growing `moov`
+    /// without shifting the chunk offsets.
+    fn make_m4a(dir: &Path, faststart: bool) -> PathBuf {
+        let name = if faststart { "aac-front.m4a" } else { "aac-back.m4a" };
+        fixture(name, dir)
+    }
+
+    /// A FLAC stream inside an MP4 container, which is what a lossless download
+    /// produces before the stream is demuxed out.
+    fn make_flac_in_mp4(dir: &Path) -> PathBuf {
+        fixture("flac-in-mp4.m4a", dir)
     }
 
     fn tiny_png() -> Vec<u8> {
@@ -820,6 +772,9 @@ mod tag_tests {
             disc_number: Some(1),
             genre: Some("rock".into()),
             isrc: None,
+            label: None,
+            explicit: None,
+            composer: None,
             cover: Some(tiny_png()),
             lyrics: Some("строка текста".into()),
             url: "https://music.yandex.ru/track/1".into(),
@@ -837,12 +792,9 @@ mod tag_tests {
             .join(format!("ymdl-lrc-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let Some(source) = make_flac_in_mp4(&dir) else {
-            eprintln!("ffmpeg недоступен — тест пропущен");
-            return;
-        };
-        assert_eq!(crate::ffmpeg::extract_flac(&source), "converted");
+        let source = make_flac_in_mp4(&dir);
         let flac = source.with_extension("flac");
+        crate::mp4::extract_flac(&source, &flac).expect("FLAC должен извлечься из mp4");
 
         let mut payload = payload_with_cover();
         payload.lyrics = Some("[00:12.34] первая строка\n[00:15.00] вторая строка".into());
@@ -868,10 +820,7 @@ mod tag_tests {
             .join(format!("ymdl-tags-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let Some(source) = make_m4a(&dir, false) else {
-            eprintln!("ffmpeg недоступен — тест пропущен");
-            return;
-        };
+        let source = make_m4a(&dir, false);
 
         // Exactly the temporary name the download engine writes before renaming.
         let temp = dir.join(".track.part.m4a");
@@ -902,13 +851,10 @@ mod tag_tests {
             .join(format!("ymdl-play-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let Some(source) = make_m4a(&dir, true) else {
-            eprintln!("ffmpeg недоступен — тест пропущен");
-            return;
-        };
+        let source = make_m4a(&dir, true);
         let intact = dir.join("intact.m4a");
         std::fs::copy(&source, &intact).unwrap();
-        assert!(crate::ffmpeg::decodes(&intact), "целый файл должен декодироваться");
+        assert!(crate::transcode::decodes(&intact), "целый файл должен декодироваться");
 
         // Reproduce the damage: push the media payload forward the way an
         // unpatched chunk-offset table does, leaving every sample misaligned.
@@ -921,17 +867,17 @@ mod tag_tests {
         damaged.extend_from_slice(&bytes[media..]);
         std::fs::write(&broken, &damaged).unwrap();
         assert!(
-            !crate::ffmpeg::decodes(&broken),
+            !crate::transcode::decodes(&broken),
             "сдвинутый mdat должен считаться битым"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Lossless downloads arrive as FLAC inside MP4 and are converted to a real
-    /// `.flac` before tagging. Tagging the m4a first lost the cover and most
-    /// fields on the way through ffmpeg, so the tagger has to work on the final
-    /// FLAC — and that is what this covers.
+    /// Lossless downloads arrive as FLAC inside MP4 and are demuxed to a real
+    /// `.flac` before tagging. Tagging the m4a first meant the fields had to
+    /// survive a container change, so the tagger works on the final FLAC — and
+    /// that is what this covers.
     #[test]
     fn a_flac_keeps_cover_and_fields() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -939,16 +885,9 @@ mod tag_tests {
             .join(format!("ymdl-flac-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let Some(source) = make_flac_in_mp4(&dir) else {
-            eprintln!("ffmpeg недоступен — тест пропущен");
-            return;
-        };
-        assert_eq!(
-            crate::ffmpeg::extract_flac(&source),
-            "converted",
-            "FLAC должен извлечься из mp4"
-        );
+        let source = make_flac_in_mp4(&dir);
         let flac = source.with_extension("flac");
+        crate::mp4::extract_flac(&source, &flac).expect("FLAC должен извлечься из mp4");
         assert!(flac.is_file());
 
         write_tags(&flac, &payload_with_cover()).expect("теги должны записаться в flac");
@@ -961,7 +900,7 @@ mod tag_tests {
         assert!(summary.contains("жанр=\"rock\""), "{summary}");
         assert!(summary.contains("обложка=1"), "обложка потерялась: {summary}");
         assert!(summary.contains("лирикс=да"), "лирикс потерялся: {summary}");
-        assert!(crate::ffmpeg::decodes(&flac), "flac после тегов не декодируется");
+        assert!(crate::transcode::decodes(&flac), "flac после тегов не декодируется");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -24,6 +24,11 @@ jobs:
           - platform: ubuntu-22.04
             args: ""
             label: linux
+          # Native build for Apple Silicon: macos-latest is an arm64 runner, which
+          # is what current Macs run. An Intel bundle would need a second job.
+          - platform: macos-latest
+            args: ""
+            label: macos
 
     runs-on: ${{ matrix.platform }}
     name: ${{ matrix.label }}
@@ -133,8 +138,8 @@ jobs:
           Если окно не открывается, поставьте "Evergreen WebView2 Runtime" от
           Microsoft.
 
-          Без ffmpeg программа скачивает .m4a; чтобы получать FLAC, положите
-          ffmpeg.exe и ffprobe.exe рядом с ym-dl.exe или установите их в PATH.
+          Ничего доустанавливать не нужно: FLAC, AAC и MP3 приложение разбирает
+          само, ffmpeg ему не требуется.
           "@ | Set-Content "$stage/ЧИТАТЬ.txt" -Encoding utf8
           Compress-Archive -Path "$stage/*" -DestinationPath "ym-dl_${version}_windows-portable.zip" -Force
           gh release upload $env:TAG "ym-dl_${version}_windows-portable.zip" --clobber
@@ -169,8 +174,8 @@ jobs:
           Настройки лежат в папке ym-dl-data рядом с программой. Токен хранится
           в системном хранилище паролей (Secret Service / GNOME Keyring).
 
-          Без ffmpeg программа скачивает .m4a; чтобы получать FLAC, установите
-          ffmpeg из репозитория вашего дистрибутива.
+          Ничего доустанавливать не нужно: FLAC, AAC и MP3 приложение разбирает
+          само, ffmpeg ему не требуется.
           EOF
           tar -czf "ym-dl_${version}_linux-portable.tar.gz" -C "$stage" .
           gh release upload "$TAG" "ym-dl_${version}_linux-portable.tar.gz" --clobber

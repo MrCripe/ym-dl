@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { api, subscribe, type AccountInfo, type Batch, type JobProgress, type LibraryTrack, type LibrarySort, type Settings, type SourceInfo, type TrackState } from "./api";
+import { api, subscribe, type AccountInfo, type Batch, type HistoryEntry, type HistorySummary, type JobProgress, type LibraryTrack, type LibrarySort, type Settings, type SourceInfo, type TrackState } from "./api";
 import { findUpdate, installUpdate, type AvailableUpdate } from "./update";
 import { resolveLang, translate } from "./i18n";
 
@@ -27,6 +27,8 @@ type State = {
   loadingSource: boolean;
   resolveProgress: { done: number; total: number } | null;
   downloading: boolean;
+  /// The job is paused, not stopped: it keeps its place in the queue.
+  jobPaused: boolean;
   progress: JobProgress | null;
   tracks: TrackState[];
   logs: LogLine[];
@@ -54,9 +56,20 @@ type State = {
   /// Selections added with "В очередь": remembered but not started until the
   /// user presses "Начать".
   queue: QueuedBatch[];
+  /// Finished jobs, newest first. Loaded when the history view opens, not at
+  /// startup: most launches never look at it.
+  history: HistoryEntry[];
+  historySummary: HistorySummary | null;
+  historyLoading: boolean;
   enqueue: () => void;
   dequeue: (id: number) => void;
   clearQueue: () => void;
+  moveQueueItem: (id: number, delta: number) => void;
+  /// Resolves every link found in the pasted text and queues each one.
+  addLinks: (text: string) => Promise<void>;
+  loadHistory: () => Promise<void>;
+  clearHistory: () => Promise<void>;
+  setJobPaused: (paused: boolean) => void;
   setPlaying: (track: LibraryTrack | null) => void;
   setPaused: (paused: boolean) => void;
 
@@ -111,6 +124,7 @@ export const useApp = create<State>((set, get) => ({
   loadingSource: false,
   resolveProgress: null,
   downloading: false,
+  jobPaused: false,
   progress: null,
   tracks: [],
   logs: [],
@@ -122,6 +136,9 @@ export const useApp = create<State>((set, get) => ({
   paused: false,
   playNonce: 0,
   queue: [],
+  history: [],
+  historySummary: null,
+  historyLoading: false,
   librarySort: "added",
   libraryDescending: true,
   libraryFilter: "",
@@ -252,7 +269,12 @@ export const useApp = create<State>((set, get) => ({
     set((current) => ({
       queue: [
         ...current.queue,
-        { id: Date.now() + current.queue.length, title, count: trackIds.length, batch: { trackIds, sourceKind: source.kind } },
+        {
+          id: Date.now() + current.queue.length,
+          title,
+          count: trackIds.length,
+          batch: { trackIds, sourceKind: source.kind, title },
+        },
       ],
     }));
     get().toast(tr(get().settings?.language, "home.enqueued", { title, count: trackIds.length }), "success");
@@ -261,6 +283,94 @@ export const useApp = create<State>((set, get) => ({
   dequeue: (id) => set((current) => ({ queue: current.queue.filter((item) => item.id !== id) })),
 
   clearQueue: () => set({ queue: [] }),
+
+  moveQueueItem: (id, delta) =>
+    set((current) => {
+      const from = current.queue.findIndex((item) => item.id === id);
+      const to = from + delta;
+      // The ends are not errors: the arrow is simply already at the edge.
+      if (from < 0 || to < 0 || to >= current.queue.length) return {};
+      const queue = [...current.queue];
+      [queue[from], queue[to]] = [queue[to], queue[from]];
+      return { queue };
+    }),
+
+  addLinks: async (text) => {
+    const urls = linksIn(text);
+    const lang = get().settings?.language;
+    if (!urls.length) {
+      get().toast(tr(lang, "home.pasteNoLinks"), "info");
+      return;
+    }
+    set({ loadingSource: true, resolveProgress: { done: 0, total: urls.length } });
+    const added: QueuedBatch[] = [];
+    const failed: string[] = [];
+    for (const [index, url] of urls.entries()) {
+      try {
+        const source = await api.resolve(url);
+        const trackIds = source.tracks.filter((track) => track.available).map((track) => track.id);
+        if (trackIds.length === 0) {
+          failed.push(source.title || url);
+        } else {
+          const title = source.kind === "likes" ? tr(lang, "home.likesOwn") : source.title;
+          added.push({
+            id: Date.now() + index,
+            title,
+            count: trackIds.length,
+            batch: { trackIds, sourceKind: source.kind, title },
+          });
+        }
+      } catch {
+        // One bad link must not throw away the others the user pasted with it.
+        failed.push(url);
+      }
+      set({ resolveProgress: { done: index + 1, total: urls.length } });
+    }
+    set((current) => ({
+      queue: [...current.queue, ...added],
+      loadingSource: false,
+      resolveProgress: null,
+    }));
+    if (added.length) {
+      get().toast(tr(lang, "toast.linksQueued", { count: added.length }), "success");
+    }
+    if (failed.length) {
+      get().toast(tr(lang, "toast.linksFailed", { count: failed.length }), "error");
+    }
+  },
+
+  setJobPaused: (paused) => {
+    set({ jobPaused: paused });
+    void api.setPaused(paused).catch((error) => {
+      // The backend refused: put the button back where it was rather than
+      // showing a pause that is not happening.
+      set({ jobPaused: !paused });
+      get().toast(String((error as Error).message), "error");
+    });
+  },
+
+  loadHistory: async () => {
+    set({ historyLoading: true });
+    try {
+      const [history, historySummary] = await Promise.all([
+        api.history(100),
+        api.historySummary(),
+      ]);
+      set({ history, historySummary, historyLoading: false });
+    } catch (error) {
+      set({ historyLoading: false });
+      get().toast(String((error as Error).message), "error");
+    }
+  },
+
+  clearHistory: async () => {
+    try {
+      await api.clearHistory();
+      set({ history: [], historySummary: null });
+    } catch (error) {
+      get().toast(String((error as Error).message), "error");
+    }
+  },
 
   patchSettings: (values) => {
     set((current) => {
@@ -379,6 +489,8 @@ export const useApp = create<State>((set, get) => ({
       batches.push({
         trackIds: source.tracks.filter((track) => selected.has(track.id)).map((track) => track.id),
         sourceKind: source.kind,
+        // The history row and the playlist name come from here.
+        title: source.kind === "likes" ? tr(get().settings?.language, "home.likesOwn") : source.title,
       });
     }
     const seen = new Set<string>();
@@ -386,12 +498,21 @@ export const useApp = create<State>((set, get) => ({
     for (const batch of batches) {
       const trackIds = batch.trackIds.filter((id) => !seen.has(id));
       trackIds.forEach((id) => seen.add(id));
-      if (trackIds.length > 0) unique.push({ sourceKind: batch.sourceKind, trackIds });
+      if (trackIds.length > 0) {
+        unique.push({ sourceKind: batch.sourceKind, trackIds, title: batch.title });
+      }
     }
     if (unique.length === 0) return;
     // The queue is emptied only once the backend accepted the job: a failed
     // start must not throw away selections the user spent time collecting.
-    set({ downloading: true, tracks: [], logs: [], page: "downloads", progress: null });
+    set({
+      downloading: true,
+      jobPaused: false,
+      tracks: [],
+      logs: [],
+      page: "downloads",
+      progress: null,
+    });
     try {
       // The source kind picks the path template: likes, an album and a loose
       // track each has its own idea of where the file belongs.
@@ -414,7 +535,7 @@ export const useApp = create<State>((set, get) => ({
     }
     if (!accepted) {
       // Nothing was running: saying "stopping" would be a lie.
-      set({ downloading: false });
+      set({ downloading: false, jobPaused: false });
       get().toast(tr(get().settings?.language, "toast.alreadyStopped"), "info");
       return;
     }
@@ -476,3 +597,24 @@ export const useApp = create<State>((set, get) => ({
   dismissToast: (id) =>
     set((current) => ({ toasts: current.toasts.filter((toast) => toast.id !== id) })),
 }));
+
+/**
+ * Every Yandex Music link in a pasted block, in order, without duplicates.
+ *
+ * The clipboard usually brings a wall of text with the link buried in it, and
+ * people paste several at once, so splitting on whitespace is not enough:
+ * anything between `music.yandex.` and the next whitespace is a candidate.
+ */
+export function linksIn(text: string): string[] {
+  const found = text.match(/https?:\/\/[^\s"'<>]*music\.yandex\.[^\s"'<>]*/g) ?? [];
+  const seen = new Set<string>();
+  const urls: string[] = [];
+  for (const raw of found) {
+    // Trailing punctuation comes along when the link sits in a sentence.
+    const url = raw.replace(/[),.;!?]+$/, "");
+    if (seen.has(url)) continue;
+    seen.add(url);
+    urls.push(url);
+  }
+  return urls;
+}

@@ -1,6 +1,6 @@
 [package]
 name = "ym-dl"
-version = "1.4.0"
+version = "1.4.1"
 description = "Загрузчик Яндекс.Музыки"
 authors = ["ym-dl"]
 edition = "2021"
@@ -45,6 +45,20 @@ keyring = { version = "4", features = ["v1"] }
 anyhow = "1"
 lofty = "0.22"
 tauri-plugin-clipboard-manager = "2"
+# Pure-Rust audio: decoding (to check a written file really plays) and the
+# FLAC/AAC sources that MP3 export converts from. Replaces the external ffmpeg,
+# which a user had to install and find on PATH themselves.
+symphonia = { version = "0.5", default-features = false, features = [
+    "flac",
+    "aac",
+    "mp3",
+    "isomp4",
+    "pcm",
+    "wav",
+] }
+# MP3 export. Bundles the LAME sources and compiles them with the system C
+# compiler, so the binary carries the encoder and needs nothing installed.
+mp3lame-encoder = "0.3"
 # Local index of downloaded tracks. `bundled` compiles SQLite in, so neither
 # Windows nor Linux needs a system package.
 rusqlite = { version = "0.32", features = ["bundled"] }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../lib/store";
 import { useT, useLang } from "../lib/i18n";
 import type { TrackState } from "../lib/api";
@@ -34,10 +34,24 @@ export default function Downloads() {
   const logs = useApp((state) => state.logs);
   const downloading = useApp((state) => state.downloading);
   const stop = useApp((state) => state.stop);
+  const jobPaused = useApp((state) => state.jobPaused);
+  const setJobPaused = useApp((state) => state.setJobPaused);
+  const history = useApp((state) => state.history);
+  const historySummary = useApp((state) => state.historySummary);
+  const historyLoading = useApp((state) => state.historyLoading);
+  const loadHistory = useApp((state) => state.loadHistory);
+  const clearHistory = useApp((state) => state.clearHistory);
   const setPage = useApp((state) => state.setPage);
   const openFolder = useApp((state) => state.openFolder);
   const toast = useApp((state) => state.toast);
   const logRef = useRef<HTMLDivElement>(null);
+  const [view, setView] = useState<"job" | "history">("job");
+
+  // The history is read when the tab is first opened: most launches never look
+  // at it, and the query costs a database round trip.
+  useEffect(() => {
+    if (view === "history") void loadHistory();
+  }, [view, loadHistory]);
 
   const visible = useMemo(() => tracks.filter(Boolean), [tracks]);
   const percent = progress && progress.total > 0 ? (progress.done / progress.total) * 100 : 0;
@@ -60,6 +74,128 @@ export default function Downloads() {
     </Button>
   );
 
+  const tabs = (
+    <div className="view-tabs" role="tablist">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={view === "job"}
+        className={`view-tab${view === "job" ? " active" : ""}`}
+        onClick={() => setView("job")}
+      >
+        <Icon name="download" />
+        {t("dl.title")}
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={view === "history"}
+        className={`view-tab${view === "history" ? " active" : ""}`}
+        onClick={() => setView("history")}
+      >
+        <Icon name="history" />
+        {t("dl.history")}
+      </button>
+    </div>
+  );
+
+  if (view === "history") {
+    const summary = historySummary;
+    return (
+      <div className="page">
+        <div className="page-narrow">
+          <div className="page-header">
+            <div>
+              <h1>{t("dl.title")}</h1>
+              <p>{t("dl.subtitle")}</p>
+            </div>
+            <div className="row">
+              {folderButton}
+              {history.length ? (
+                <Button
+                  variant="danger-tonal"
+                  icon="delete_sweep"
+                  onClick={() => void clearHistory()}
+                >
+                  {t("dl.historyClear")}
+                </Button>
+              ) : null}
+            </div>
+          </div>
+
+          {tabs}
+
+          {summary && summary.jobs > 0 ? (
+            <div className="history-summary animate-in">
+              <div className="job-stat">
+                <span className="num">{summary.jobs}</span>
+                <span className="cap">{t("dl.historyJobs")}</span>
+              </div>
+              <div className="job-stat">
+                <span className="num" style={{ color: "var(--success)" }}>
+                  {summary.ok}
+                </span>
+                <span className="cap">{t("dl.done")}</span>
+              </div>
+              <div className="job-stat">
+                <span className="num" style={{ color: "var(--warning)" }}>
+                  {summary.skipped}
+                </span>
+                <span className="cap">{t("dl.skipped")}</span>
+              </div>
+              <div className="job-stat">
+                <span className="num" style={{ color: "var(--error)" }}>
+                  {summary.failed}
+                </span>
+                <span className="cap">{t("dl.failed")}</span>
+              </div>
+            </div>
+          ) : null}
+
+          {history.length ? (
+            <div className="download-list" style={{ marginTop: 16 }}>
+              {history.map((entry) => (
+                <div className="history-row" key={entry.id}>
+                  <Icon name="history" />
+                  <div className="grow stack" style={{ minWidth: 0 }}>
+                    <span className="truncate md-body">{entry.title}</span>
+                    <span className="md-body-sm muted">
+                      {new Date(entry.finishedAt * 1000).toLocaleString(undefined, {
+                        day: "2-digit",
+                        month: "2-digit",
+                        year: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                      {" · "}
+                      {t("dl.done")} {entry.ok} {t("home.of")} {entry.total}
+                      {entry.skipped ? ` · ${t("dl.skipped")} ${entry.skipped}` : ""}
+                      {entry.failed ? ` · ${t("dl.failed")} ${entry.failed}` : ""}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : historyLoading ? (
+            <div className="download-list" style={{ marginTop: 16 }}>
+              {[0, 1, 2].map((key) => (
+                <div key={key} className="skeleton-row" />
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Icon name="history" />
+              <div className="md-title">{t("dl.historyEmpty")}</div>
+              <div className="md-body-sm">{t("dl.historyEmptyHint")}</div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Nothing is running and nothing ran this session. The tabs still have to be
+  // there: a previous launch's history lives behind the second one.
   if (!visible.length && !downloading) {
     return (
       <div className="page">
@@ -71,6 +207,7 @@ export default function Downloads() {
             </div>
             {folderButton}
           </div>
+          {tabs}
           <div className="empty-state">
             <Icon name="download" />
             <div className="md-title">{t("dl.emptyTitle")}</div>
@@ -99,9 +236,18 @@ export default function Downloads() {
           <div className="row">
             {folderButton}
             {downloading ? (
-              <Button variant="danger-tonal" icon="stop_circle" onClick={stop}>
-                {t("dl.stop")}
-              </Button>
+              <>
+                <Button
+                  variant="tonal"
+                  icon={jobPaused ? "play_arrow" : "pause"}
+                  onClick={() => setJobPaused(!jobPaused)}
+                >
+                  {jobPaused ? t("dl.resume") : t("dl.pause")}
+                </Button>
+                <Button variant="danger-tonal" icon="stop_circle" onClick={stop}>
+                  {t("dl.stop")}
+                </Button>
+              </>
             ) : (
               <Button variant="tonal" icon="home" onClick={() => setPage("home")}>
                 {t("dl.toHome")}
@@ -109,6 +255,8 @@ export default function Downloads() {
             )}
           </div>
         </div>
+
+        {tabs}
 
         <div className="job-header animate-in">
           <div className="job-ring">
@@ -173,9 +321,15 @@ export default function Downloads() {
             </div>
           </div>
           {downloading ? (
-            <Badge tone="primary" icon="bolt">
-              {progress?.stopping ? t("dl.stopping") : t("dl.working")}
-            </Badge>
+            jobPaused ? (
+              <Badge tone="warning" icon="pause">
+                {t("dl.paused")}
+              </Badge>
+            ) : (
+              <Badge tone="primary" icon="bolt">
+                {progress?.stopping ? t("dl.stopping") : t("dl.working")}
+              </Badge>
+            )
           ) : progress?.error ? (
             <Badge tone="error" icon="error">
               {t("dl.interrupted")}

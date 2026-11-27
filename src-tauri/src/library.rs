@@ -92,7 +92,7 @@ fn now() -> i64 {
 /// replaced database is then rebuilt on the next call instead of answering
 /// `no such table` until the app is restarted, and a test that points the
 /// registry at a fresh file gets a schema of its own.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Opens the database, creating it on first use.
 ///
@@ -141,7 +141,21 @@ pub fn connect() -> Result<Connection> {
          CREATE INDEX IF NOT EXISTS tracks_isrc ON tracks(isrc);
          CREATE INDEX IF NOT EXISTS tracks_artist ON tracks(artist);
          CREATE INDEX IF NOT EXISTS tracks_album ON tracks(album);
-         CREATE INDEX IF NOT EXISTS tracks_year ON tracks(year);",
+         CREATE INDEX IF NOT EXISTS tracks_year ON tracks(year);
+         -- One row per finished download job. The tracks table answers what is
+         -- on disk; this answers what was downloaded, which is what the download
+         -- screen shows after a restart.
+         CREATE TABLE IF NOT EXISTS history (
+             id          INTEGER PRIMARY KEY AUTOINCREMENT,
+             title       TEXT NOT NULL DEFAULT '',
+             source_kind TEXT NOT NULL DEFAULT '',
+             total       INTEGER NOT NULL DEFAULT 0,
+             ok          INTEGER NOT NULL DEFAULT 0,
+             skipped     INTEGER NOT NULL DEFAULT 0,
+             failed      INTEGER NOT NULL DEFAULT 0,
+             finished_at INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE INDEX IF NOT EXISTS history_finished ON history(finished_at);",
     )?;
     connection.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     Ok(connection)
@@ -470,6 +484,102 @@ pub fn prune() -> Result<usize> {
     }
     transaction.commit()?;
     Ok(gone.len())
+}
+
+/// One finished download job, as the history screen shows it.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntry {
+    pub id: i64,
+    /// What the user resolved: an album title, a playlist, "Мне нравится".
+    pub title: String,
+    pub source_kind: String,
+    pub total: usize,
+    pub ok: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    /// Unix seconds.
+    pub finished_at: i64,
+}
+
+/// Records a finished job. A job that did nothing is not recorded: an empty
+/// entry in a history list is noise.
+pub fn record_history(entry: &HistoryEntry) -> Result<i64> {
+    if entry.total == 0 {
+        return Ok(0);
+    }
+    let connection = connect()?;
+    connection.execute(
+        "INSERT INTO history (title, source_kind, total, ok, skipped, failed, finished_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            entry.title,
+            entry.source_kind,
+            entry.total as i64,
+            entry.ok as i64,
+            entry.skipped as i64,
+            entry.failed as i64,
+            if entry.finished_at > 0 { entry.finished_at } else { now() },
+        ],
+    )?;
+    Ok(connection.last_insert_rowid())
+}
+
+/// The newest jobs first, capped so a long history cannot fill the screen.
+pub fn history(limit: usize) -> Result<Vec<HistoryEntry>> {
+    let connection = connect()?;
+    let mut statement = connection.prepare(
+        "SELECT id, title, source_kind, total, ok, skipped, failed, finished_at
+         FROM history ORDER BY finished_at DESC, id DESC LIMIT ?1",
+    )?;
+    let rows = statement.query_map(params![limit.clamp(1, 500) as i64], |row| {
+        Ok(HistoryEntry {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            source_kind: row.get(2)?,
+            total: row.get::<_, i64>(3)? as usize,
+            ok: row.get::<_, i64>(4)? as usize,
+            skipped: row.get::<_, i64>(5)? as usize,
+            failed: row.get::<_, i64>(6)? as usize,
+            finished_at: row.get(7)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Totals across every recorded job, for the summary line.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistorySummary {
+    pub jobs: usize,
+    pub ok: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub last_at: i64,
+}
+
+pub fn history_summary() -> Result<HistorySummary> {
+    let connection = connect()?;
+    Ok(connection.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(ok), 0), COALESCE(SUM(skipped), 0),
+                COALESCE(SUM(failed), 0), COALESCE(MAX(finished_at), 0)
+         FROM history",
+        [],
+        |row| {
+            Ok(HistorySummary {
+                jobs: row.get::<_, i64>(0)? as usize,
+                ok: row.get::<_, i64>(1)? as usize,
+                skipped: row.get::<_, i64>(2)? as usize,
+                failed: row.get::<_, i64>(3)? as usize,
+                last_at: row.get(4)?,
+            })
+        },
+    )?)
+}
+
+pub fn clear_history() -> Result<()> {
+    connect()?.execute("DELETE FROM history", [])?;
+    Ok(())
 }
 
 #[cfg(test)]

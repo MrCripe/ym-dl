@@ -207,7 +207,7 @@ pub async fn run_live_check(track_id: &str, quality: u8) -> LiveReport {
                 return LiveReport { ok: false, lines };
             }
             // Tags are worthless on a file that no longer plays.
-            if !crate::ffmpeg::decodes(&final_path) {
+            if !crate::transcode::decodes(&final_path) {
                 lines.push("файл после записи тегов не декодируется".to_string());
                 return LiveReport { ok: false, lines };
             }
@@ -215,6 +215,56 @@ pub async fn run_live_check(track_id: &str, quality: u8) -> LiveReport {
         }
         Err(error) => {
             lines.push(format!("файл не перечитался: {error:#}"));
+            return LiveReport { ok: false, lines };
+        }
+    }
+
+    // The three side files this release added, through the same calls the
+    // download engine makes. They are checked here because a live run is the
+    // only place where real audio, a real cover and a real container meet.
+    if let Some(cover) = crate::sidecar::write_cover(&final_path, payload.cover.as_deref()) {
+        lines.push(format!("cover.jpg: {}", cover.display()));
+    } else {
+        lines.push("cover.jpg не записался".to_string());
+        return LiveReport { ok: false, lines };
+    }
+    match crate::sidecar::write_playlist("live-check", std::slice::from_ref(&final_path)) {
+        Some(playlist) => match std::fs::read_to_string(&playlist) {
+            Ok(body) => {
+                let relative = body
+                    .lines()
+                    .any(|line| !line.is_empty() && !line.starts_with('#') && !line.contains(':'));
+                lines.push(format!(
+                    "плейлист: {} ({} строк, относительные пути: {relative})",
+                    playlist.display(),
+                    body.lines().count()
+                ));
+                if !relative {
+                    return LiveReport { ok: false, lines };
+                }
+            }
+            Err(error) => {
+                lines.push(format!("плейлист не перечитался: {error}"));
+                return LiveReport { ok: false, lines };
+            }
+        },
+        None => {
+            lines.push("плейлист не записался".to_string());
+            return LiveReport { ok: false, lines };
+        }
+    }
+
+    let mp3 = final_path.with_extension("mp3");
+    match crate::transcode::encode_mp3(&final_path, &mp3) {
+        Ok(bytes) => {
+            let plays = crate::transcode::decodes(&mp3);
+            lines.push(format!("MP3 320: {bytes} байт, декодируется: {plays}"));
+            if !plays {
+                return LiveReport { ok: false, lines };
+            }
+        }
+        Err(error) => {
+            lines.push(format!("MP3 не получился: {error:#}"));
             return LiveReport { ok: false, lines };
         }
     }

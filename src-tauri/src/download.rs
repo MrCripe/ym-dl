@@ -8,7 +8,6 @@
 use crate::api::{self, Client};
 use crate::audio;
 use crate::config::Settings;
-use crate::ffmpeg;
 use crate::model::{JobProgress, Track, TrackState};
 use anyhow::Result;
 use serde::Serialize;
@@ -36,9 +35,21 @@ pub struct JobLog {
     pub message: String,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct JobControl {
     cancel: Arc<AtomicBool>,
+    /// Set while the user has paused the queue. Workers finish the track in hand
+    /// and then wait here, so a pause never leaves a half-written file behind.
+    paused: Arc<AtomicBool>,
+}
+
+impl Default for JobControl {
+    fn default() -> Self {
+        Self {
+            cancel: Arc::new(AtomicBool::new(false)),
+            paused: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 impl JobControl {
@@ -48,6 +59,30 @@ impl JobControl {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
+    }
+
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::SeqCst);
+    }
+
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+
+    /// Blocks while paused. Returns `false` when the job was cancelled meanwhile,
+    /// which the caller uses to stop instead of waiting for nothing.
+    pub async fn wait_while_paused(&self) -> bool {
+        while self.is_paused() {
+            if self.is_cancelled() {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+        !self.is_cancelled()
     }
 }
 
@@ -76,6 +111,9 @@ struct Shared {
     /// big playlist is what pushed lrclib into its rate limit, and a request that
     /// hits the limit leaves the track without lyrics for good.
     missing_lyrics: Mutex<Vec<(usize, PathBuf)>>,
+    /// Every file this job wrote, tagged with the batch it came from, so the
+    /// closing pass can write one playlist per album or collection.
+    written: Mutex<Vec<(String, PathBuf)>>,
 }
 
 impl Shared {
@@ -177,6 +215,7 @@ impl Shared {
         track: &Track,
         target_dir: &Path,
         source_kind: &str,
+        batch_title: &str,
     ) {
         if !track.available {
             self.settle(index, "failed", "трек недоступен в регионе", "");
@@ -283,7 +322,7 @@ impl Shared {
             None => body,
         };
 
-        // Keep the real extension last: the tagger and ffprobe both identify the
+        // Keep the real extension last: the tagger and the demuxer both identify the
         // container by it, and `X.m4a.part` reads as an unknown format.
         let temp = audio::part_path(&final_path);
         if let Err(error) = std::fs::write(&temp, &bytes) {
@@ -297,46 +336,67 @@ impl Shared {
             return;
         }
 
-        if self.settings.extract_flac && codec == "FLAC" && container == "MP4" && ffmpeg::available()
-        {
-            // ffmpeg is a blocking child process: keep it off the async runtime.
+        if self.settings.extract_flac && codec == "FLAC" && container == "MP4" {
+            // Demuxing reads and writes tens of megabytes: keep it off the async
+            // runtime so the other workers keep moving.
             let source = final_path.clone();
-            let outcome = tauri::async_runtime::spawn_blocking(move || ffmpeg::extract_flac(&source))
-                .await
-                .unwrap_or_else(|_| "failed".to_string());
-            match outcome.as_str() {
-                "converted" => {
-                    // The FLAC holds the same audio; keeping the .m4a too only
-                    // doubles the size of the library.
-                    ffmpeg::drop_source(&final_path);
-                    final_path = final_path.with_extension("flac");
-                    self.log("ok", format!("FLAC извлечён: {}", final_path.display()));
+            let target = final_path.with_extension("flac");
+            let outcome = tauri::async_runtime::spawn_blocking(move || {
+                crate::mp4::extract_flac(&source, &target)
+            })
+            .await;
+            match outcome {
+                Ok(Ok(_)) => {
+                    let extracted = final_path.with_extension("flac");
+                    // The demuxer can produce a shorter stream from a container
+                    // whose sample tables disagree with each other. Deleting the
+                    // original first would leave the user with a truncated file
+                    // and no way back, so the result is decoded before the .m4a
+                    // is dropped.
+                    let check = extracted.clone();
+                    let plays = tauri::async_runtime::spawn_blocking(move || {
+                        crate::transcode::decodes(&check)
+                    })
+                    .await
+                    .unwrap_or(false);
+                    if !plays {
+                        let _ = std::fs::remove_file(&extracted);
+                        self.log(
+                            "warn",
+                            format!(
+                                "FLAC из {} не прошёл проверку; файл оставлен как .m4a",
+                                final_path.display()
+                            ),
+                        );
+                    } else {
+                        // The FLAC holds the same audio; keeping the .m4a too only
+                        // doubles the size of the library.
+                        let _ = std::fs::remove_file(&final_path);
+                        final_path = extracted;
+                        self.log("ok", format!("FLAC извлечён: {}", final_path.display()));
+                    }
                 }
-                "exists" => {
-                    // A `.flac` that was already there is not this download's
-                    // audio, so the fresh file is kept and the old one left alone.
-                    self.log(
-                        "warn",
-                        format!(
-                            "Рядом уже есть {}; скачанный файл оставлен как {}",
-                            final_path.with_extension("flac").display(),
-                            final_path.display()
-                        ),
-                    );
-                }
-                _ => self.log(
+                Ok(Err(error)) => self.log(
                     "warn",
-                    format!("Не удалось извлечь FLAC из {}; оставлен .m4a", final_path.display()),
+                    format!(
+                        "FLAC не извлечён из {}; файл оставлен как есть: {error:#}",
+                        final_path.display()
+                    ),
+                ),
+                Err(error) => self.log(
+                    "warn",
+                    format!("FLAC не извлечён из {}: {error}", final_path.display()),
                 ),
             }
         }
 
-        // Tags go into the file that is actually kept. Tagging the m4a before the
-        // FLAC extraction lost the cover and most fields on the way through ffmpeg,
-        // and the m4a muxer refuses a FLAC stream outright.
+        // Tags go into the file that is actually kept: tagging the m4a before the
+        // FLAC extraction meant the fields had to survive a container change, and
+        // the m4a muxer refuses a FLAC stream outright.
         if let Err(error) = self.tag(index, track, &final_path, &item.id).await {
             self.log("warn", format!("Теги не записались для «{}»: {error:#}", item.title));
         }
+        self.mp3_copy(&final_path).await;
 
         // The registry is what the library screen reads and what stops the same
         // track from being downloaded again after a template change.
@@ -347,6 +407,13 @@ impl Shared {
         } else {
             codec.to_string()
         };
+        // Remembered for the closing pass: one playlist per batch, and the
+        // history row needs to know how many of each outcome there were.
+        if let Ok(mut written) = self.written.lock() {
+            if !batch_title.is_empty() {
+                written.push((batch_title.to_string(), final_path.clone()));
+            }
+        }
         self.settle(index, "ok", &label, &final_path.display().to_string());
     }
 
@@ -404,6 +471,7 @@ impl Shared {
             format!("https://music.yandex.ru/album/{album_id}/track/{track_id}"),
             self.settings.compatibility_level,
         );
+        strip_extended(&mut payload, self.settings.extended_tags);
 
         if self.settings.embed_cover {
             payload.cover = cover_bytes(&self.client, &self.settings, track).await;
@@ -441,7 +509,48 @@ impl Shared {
             }
         }
 
-        audio::write_tags(path, &payload)
+        audio::write_tags(path, &payload)?;
+        // The cover is already in memory: a copy next to the audio is what a
+        // phone shows in a folder view without reading the tag block.
+        if self.settings.sidecar_cover {
+            crate::sidecar::write_cover(path, payload.cover.as_deref());
+        }
+        Ok(())
+    }
+
+    /// Writes the MP3 copy the settings ask for, beside the original.
+    ///
+    /// The service has no MP3 stream, so this decodes what was downloaded and
+    /// encodes it again. A failure is logged and does not fail the track: the
+    /// original is on disk and plays.
+    async fn mp3_copy(&self, path: &Path) {
+        if !self.settings.mp3_copy || path.extension().and_then(|ext| ext.to_str()) == Some("mp3") {
+            return;
+        }
+        // Reserved through `claim` like any other output path: two tracks whose
+        // template drops the unique fields would otherwise write the same
+        // `song.mp3` and one copy would silently replace the other.
+        let target = self.claim(path.with_extension("mp3"));
+        if target.is_file() {
+            return;
+        }
+        let source = path.to_path_buf();
+        let target_for_job = target.clone();
+        let outcome = tauri::async_runtime::spawn_blocking(move || {
+            crate::transcode::encode_mp3(&source, &target_for_job)
+        })
+        .await;
+        match outcome {
+            Ok(Ok(bytes)) => self.log(
+                "info",
+                format!("MP3-копия: {} ({bytes} байт)", target.display()),
+            ),
+            Ok(Err(error)) => self.log(
+                "warn",
+                format!("MP3-копия не сделана для {}: {error:#}", path.display()),
+            ),
+            Err(error) => self.log("warn", format!("MP3-копия не сделана: {error}")),
+        }
     }
 }
 
@@ -596,6 +705,7 @@ pub async fn upgrade_track(
         ),
         settings.compatibility_level,
     );
+    strip_extended(&mut payload, settings.extended_tags);
     if !previous.lyrics.is_empty() {
         payload.lyrics = Some(previous.lyrics);
     }
@@ -611,17 +721,21 @@ pub async fn upgrade_track(
     let mut staged = audio::part_path(&final_path);
     std::fs::write(&staged, &bytes)?;
 
-    if settings.extract_flac && codec == "FLAC" && container == "MP4" && ffmpeg::available() {
+    if settings.extract_flac && codec == "FLAC" && container == "MP4" {
         // A `.flac` left by an interrupted run would be taken for this
-        // conversion's result, so it is cleared first.
-        let _ = std::fs::remove_file(staged.with_extension("flac"));
+        // extraction's result, so it is cleared first.
         let source = staged.clone();
-        let outcome = tauri::async_runtime::spawn_blocking(move || ffmpeg::extract_flac(&source))
-            .await
-            .unwrap_or_else(|_| "failed".to_string());
-        if outcome == "converted" {
-            ffmpeg::drop_source(&staged);
-            staged = staged.with_extension("flac");
+        let target = staged.with_extension("flac");
+        let _ = std::fs::remove_file(&target);
+        let target_for_job = target.clone();
+        let outcome = tauri::async_runtime::spawn_blocking(move || {
+            crate::mp4::extract_flac(&source, &target_for_job)
+        })
+        .await
+        .unwrap_or_else(|error| Err(anyhow::anyhow!("{error}")));
+        if outcome.is_ok() {
+            let _ = std::fs::remove_file(&staged);
+            staged = target;
             final_path = final_path.with_extension("flac");
         }
         // A failed extraction leaves the staged `.m4a`: the same audio, only in
@@ -697,6 +811,22 @@ pub async fn upgrade_track(
 pub struct Batch {
     pub track_ids: Vec<String>,
     pub source_kind: String,
+    /// What the user resolved, used for the history row and the playlist name.
+    #[serde(default)]
+    pub title: String,
+}
+
+/// Drops the tags the settings switch off.
+///
+/// `from_track` fills everything the service gave; turning the switch off here
+/// rather than inside it keeps the payload builder free of a settings type.
+fn strip_extended(payload: &mut audio::TagPayload<'_>, keep: bool) {
+    if keep {
+        return;
+    }
+    payload.label = None;
+    payload.explicit = None;
+    payload.composer = None;
 }
 
 pub struct Job {
@@ -724,6 +854,7 @@ impl Job {
                 total: AtomicUsize::new(total),
                 claimed: Mutex::new(std::collections::HashSet::new()),
                 missing_lyrics: Mutex::new(Vec::new()),
+                written: Mutex::new(Vec::new()),
             }),
             batches,
         }
@@ -740,6 +871,7 @@ impl Job {
         // is chosen per track, not per job.
         let mut tracks: Vec<Track> = Vec::with_capacity(wanted);
         let mut kinds: Vec<String> = Vec::with_capacity(wanted);
+        let mut titles: Vec<String> = Vec::with_capacity(wanted);
         for batch in &self.batches {
             for chunk in batch.track_ids.chunks(BATCH) {
                 if shared.control.is_cancelled() {
@@ -747,6 +879,7 @@ impl Job {
                 }
                 let fetched = shared.client.tracks(chunk).await?;
                 kinds.resize(kinds.len() + fetched.len(), batch.source_kind.clone());
+                titles.resize(titles.len() + fetched.len(), batch.title.clone());
                 tracks.extend(fetched);
                 shared.log(
                     "info",
@@ -758,6 +891,9 @@ impl Job {
         // loop indexes both, so it is padded to the same length.
         while kinds.len() < tracks.len() {
             kinds.push("track".to_string());
+        }
+        while titles.len() < tracks.len() {
+            titles.push(String::new());
         }
 
         shared.total.store(tracks.len(), Ordering::SeqCst);
@@ -817,22 +953,30 @@ impl Job {
         let workers = shared.settings.concurrent.clamp(1, 6) as usize;
         let tracks = Arc::new(tracks);
         let kinds = Arc::new(kinds);
+        let titles = Arc::new(titles);
         let mut handles = Vec::with_capacity(workers);
         for _ in 0..workers {
             let shared = shared.clone();
             let tracks = tracks.clone();
             let kinds = kinds.clone();
+            let titles = titles.clone();
             let next = next.clone();
             let target_dir = target_dir.clone();
             handles.push(tauri::async_runtime::spawn(async move {
                 loop {
+                    // A paused queue keeps its workers alive but idle, so
+                    // resuming continues the same job instead of starting a new one.
+                    if !shared.control.wait_while_paused().await {
+                        break;
+                    }
                     let index = next.fetch_add(1, Ordering::SeqCst);
                     if index >= tracks.len() || shared.control.is_cancelled() {
                         break;
                     }
                     let kind = kinds.get(index).map(String::as_str).unwrap_or("track");
+                    let title = titles.get(index).cloned().unwrap_or_default();
                     shared
-                        .download_one(index, &tracks[index], &target_dir, kind)
+                        .download_one(index, &tracks[index], &target_dir, kind, &title)
                         .await;
                     shared.counters.done.fetch_add(1, Ordering::SeqCst);
                     shared.emit_progress(true);
@@ -925,9 +1069,71 @@ impl Job {
         }
 
         // No folder-wide sweep here. Every track this job wrote was already
-        // converted on the spot, so walking the download folder with ffprobe again
+        // converted on the spot, so walking the download folder with a decoder again
         // only re-examined files the app did not touch — and the folder is now the
         // user's whole music library.
+
+        // Playlists and history, once, after every file is on disk. Per-track
+        // writing would either append to the same list concurrently or drop the
+        // tracks a worker had not written yet.
+        {
+            let written = match shared.written.lock() {
+                Ok(written) => written.clone(),
+                Err(poisoned) => poisoned.into_inner().clone(),
+            };
+            if shared.settings.write_m3u {
+                // Grouped by the batch the tracks came from, because a playlist
+                // is one album or one collection, not the whole job.
+                let mut by_title: Vec<(String, Vec<PathBuf>)> = Vec::new();
+                for (title, path) in &written {
+                    match by_title.iter_mut().find(|(name, _)| name == title) {
+                        Some((_, paths)) => paths.push(path.clone()),
+                        None => by_title.push((title.clone(), vec![path.clone()])),
+                    }
+                }
+                for (title, paths) in by_title {
+                    if let Some(playlist) = crate::sidecar::write_playlist(&title, &paths) {
+                        shared.log(
+                            "info",
+                            format!("Плейлист: {} ({})", playlist.display(), paths.len()),
+                        );
+                    }
+                }
+            }
+
+            // One row per job, not per batch: the counters are totals. The title
+            // says so when the queue held more than one source, otherwise the row
+            // would claim the whole job was that one album.
+            let first_title = self
+                .batches
+                .first()
+                .map(|batch| batch.title.clone())
+                .unwrap_or_default();
+            let title = if self.batches.len() > 1 {
+                format!("{first_title} +{}", self.batches.len() - 1)
+            } else {
+                first_title
+            };
+            let entry = crate::library::HistoryEntry {
+                id: 0,
+                title,
+                source_kind: self
+                    .batches
+                    .first()
+                    .map(|batch| batch.source_kind.clone())
+                    .unwrap_or_default(),
+                total: shared.total.load(Ordering::SeqCst),
+                ok: shared.counters.ok.load(Ordering::SeqCst),
+                skipped: shared.counters.skipped.load(Ordering::SeqCst),
+                failed: shared.counters.failed.load(Ordering::SeqCst),
+                finished_at: 0,
+            };
+            // A history row is a convenience, never a reason to fail a job that
+            // already wrote its files.
+            if let Err(error) = crate::library::record_history(&entry) {
+                shared.log("warn", format!("История не записалась: {error:#}"));
+            }
+        }
 
         let final_progress = JobProgress {
             done: shared.counters.done.load(Ordering::SeqCst),

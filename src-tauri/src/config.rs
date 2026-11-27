@@ -51,6 +51,17 @@ pub struct Settings {
     pub check_updates: bool,
     pub last_url: String,
     pub concurrent: u8,
+    /// Write the cover as `cover.jpg` next to the audio. Players and file
+    /// managers show it without reading the tag block.
+    pub sidecar_cover: bool,
+    /// Write an `.m3u8` playlist for an album, a playlist or the likes list.
+    /// A player wants a list of files, not a folder to walk.
+    pub write_m3u: bool,
+    /// Also keep an MP3 copy at 320 kbit/s beside the original. The service has
+    /// no MP3 stream, so the file is decoded and encoded again.
+    pub mp3_copy: bool,
+    /// Write `explicit`, `label` and `composer` when the service provides them.
+    pub extended_tags: bool,
 }
 
 impl Default for Settings {
@@ -84,6 +95,10 @@ impl Default for Settings {
             check_updates: true,
             last_url: String::new(),
             concurrent: 2,
+            sidecar_cover: false,
+            write_m3u: false,
+            mp3_copy: false,
+            extended_tags: true,
         }
     }
 }

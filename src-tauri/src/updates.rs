@@ -6,10 +6,8 @@
 //! while the UI still showed "up to date". The Atom feed is served by
 //! github.com itself, carries the same tags and has no such limit.
 
-use crate::ffmpeg;
 use crate::model::UpdateEntry;
 use anyhow::Result;
-use std::process::Command;
 use std::time::Duration;
 
 /// Where this app publishes its releases.
@@ -26,27 +24,6 @@ fn version_tuple(text: &str) -> Vec<u64> {
 
 fn newer(latest: &str, installed: &str) -> bool {
     version_tuple(latest) > version_tuple(installed)
-}
-
-fn ffmpeg_version() -> String {
-    let Some(path) = ffmpeg::ffmpeg_path() else {
-        return String::new();
-    };
-    let mut command = Command::new(path);
-    command.arg("-version");
-    // Without this a console window flashes on every update check, and the check
-    // runs at startup.
-    match ffmpeg::hidden(&mut command).output() {
-        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .next()
-            .unwrap_or("")
-            .split_whitespace()
-            .nth(2)
-            .unwrap_or("")
-            .to_string(),
-        _ => String::new(),
-    }
 }
 
 /// The newest tag in the releases feed.
@@ -110,31 +87,6 @@ pub async fn check_updates(app_version: &str) -> Vec<UpdateEntry> {
         },
     };
     entries.push(entry);
-
-    // ffmpeg is installed by the user and its builds are date-stamped, so there is
-    // nothing to compare against; showing the version is the useful part.
-    let installed = ffmpeg_version();
-    entries.push(if installed.is_empty() {
-        UpdateEntry {
-            kind: "ffmpeg".into(),
-            name: "ffmpeg".into(),
-            installed: "не найден".into(),
-            latest: "—".into(),
-            newer: false,
-            checked: true,
-            detail: "Без ffmpeg нельзя извлечь настоящий FLAC из .m4a.".into(),
-        }
-    } else {
-        UpdateEntry {
-            kind: "ffmpeg".into(),
-            name: "ffmpeg".into(),
-            installed,
-            latest: "—".into(),
-            newer: false,
-            checked: true,
-            detail: "Обновляется отдельно от приложения.".into(),
-        }
-    });
 
     entries
 }

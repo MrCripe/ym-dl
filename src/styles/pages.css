@@ -457,6 +457,74 @@
   animation: spin 1s linear infinite;
 }
 
+/* Two views on one screen: the running job and what finished before it. A tab
+   strip rather than a route, because both belong to "Загрузки". */
+.view-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 16px;
+  padding: 4px;
+  border-radius: var(--radius-full);
+  background: var(--surface-low);
+  width: fit-content;
+}
+
+.view-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--on-surface-variant);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-short2) var(--ease-standard),
+    color var(--dur-short2) var(--ease-standard);
+}
+
+.view-tab > .material-symbols-rounded {
+  font-size: 18px;
+}
+
+.view-tab:hover {
+  background: color-mix(in srgb, var(--on-surface) 6%, transparent);
+}
+
+.view-tab.active {
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
+}
+
+/* Totals across every recorded job, above the list: one line answers "сколько
+   всего скачано" without reading the rows. */
+.history-summary {
+  display: flex;
+  gap: 28px;
+  padding: 16px 18px;
+  border-radius: var(--radius-md);
+  background: var(--surface-low);
+}
+
+/* One finished job: a line, not a card. */
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface-low);
+}
+
+.history-row > .material-symbols-rounded {
+  font-size: 20px;
+  color: var(--on-surface-variant);
+}
+
 .log-panel {
   margin-top: 20px;
   background: var(--surface-low);

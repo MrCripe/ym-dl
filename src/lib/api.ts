@@ -32,6 +32,15 @@ export type Settings = {
   checkUpdates: boolean;
   lastUrl: string;
   concurrent: number;
+  /// Write the cover as `cover.jpg` beside the audio file.
+  sidecarCover: boolean;
+  /// Write an `.m3u8` playlist for an album, a playlist or the likes list.
+  writeM3u: boolean;
+  /// Keep an MP3 320 copy next to the original. The service has no MP3
+  /// stream, so the file is decoded and encoded again.
+  mp3Copy: boolean;
+  /// Write `explicit`, `label` and `composer` when the service provides them.
+  extendedTags: boolean;
 };
 
 export type AccountInfo = {
@@ -122,7 +131,7 @@ export type JobProgress = {
 export type JobLog = { level: "info" | "ok" | "warn" | "error"; message: string };
 
 export type UpdateEntry = {
-  kind: "app" | "ffmpeg";
+  kind: "app";
   name: string;
   installed: string;
   latest: string;
@@ -132,9 +141,6 @@ export type UpdateEntry = {
 };
 
 export type EnvironmentInfo = {
-  ffmpeg: boolean;
-  ffprobe: boolean;
-  ffmpegPath: string;
   appVersion: string;
   configPath: string;
   portable: boolean;
@@ -193,7 +199,29 @@ export type LibrarySort = "added" | "artist" | "album" | "year" | "title" | "dur
 
 /// One thing waiting in the download queue: a selection and where it came from.
 /// The kind picks the path template, so it travels with the tracks.
-export type Batch = { trackIds: string[]; sourceKind: string };
+export type Batch = { trackIds: string[]; sourceKind: string; title: string };
+
+/// One finished download job, as the history screen shows it.
+export type HistoryEntry = {
+  id: number;
+  title: string;
+  sourceKind: string;
+  total: number;
+  ok: number;
+  skipped: number;
+  failed: number;
+  /// Unix seconds.
+  finishedAt: number;
+};
+
+/// Totals across every recorded job.
+export type HistorySummary = {
+  jobs: number;
+  ok: number;
+  skipped: number;
+  failed: number;
+  lastAt: number;
+};
 
 const call = <T>(command: string, args?: Record<string, unknown>) =>
   invoke<T>(command, args).catch((error) => {
@@ -213,6 +241,10 @@ export const api = {
   likes: () => call<SourceInfo>("load_likes"),
   start: (batches: Batch[]) => call<void>("start_download", { batches }),
   stop: () => call<boolean>("stop_download"),
+  setPaused: (paused: boolean) => call<boolean>("pause_download", { paused }),
+  history: (limit: number) => call<HistoryEntry[]>("history", { limit }),
+  historySummary: () => call<HistorySummary>("history_summary"),
+  clearHistory: () => call<void>("clear_history"),
   updates: () => call<UpdateEntry[]>("check_updates"),
   environment: () => call<EnvironmentInfo>("environment"),
   openDownloadDir: () => call<void>("open_download_dir"),

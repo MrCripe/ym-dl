@@ -3,7 +3,6 @@
 use crate::api::{self, Client};
 use crate::config::{self, Settings};
 use crate::download::{Job, JobControl};
-use crate::ffmpeg;
 use crate::model::*;
 use crate::startup_log;
 use crate::updates;
@@ -393,10 +392,15 @@ pub fn start_download(
             );
         }
         if let Some(state) = running.try_state::<AppState>() {
-            state.running.store(false, Ordering::SeqCst);
+            // The slot is cleared before `running`, not after: a new start that
+            // slips in between would otherwise have its fresh control wiped by
+            // this finishing job, leaving stop and pause without anything to
+            // talk to. In this order that start sees `running` still set and is
+            // refused cleanly instead.
             if let Ok(mut slot) = state.job.lock() {
                 *slot = None;
             }
+            state.running.store(false, Ordering::SeqCst);
         }
     });
     Ok(())
@@ -416,6 +420,51 @@ pub fn stop_download(state: State<'_, AppState>) -> bool {
     }
 }
 
+
+#[tauri::command]
+pub fn pause_download(state: State<'_, AppState>, paused: bool) -> bool {
+    match state.job.lock() {
+        Ok(slot) => match slot.as_ref() {
+            Some(control) => {
+                if paused {
+                    control.pause();
+                } else {
+                    control.resume();
+                }
+                control.is_paused()
+            }
+            None => false,
+        },
+        Err(_) => false,
+    }
+}
+
+#[tauri::command]
+pub async fn history(limit: Option<usize>) -> std::result::Result<Vec<crate::library::HistoryEntry>, String> {
+    let limit = limit.unwrap_or(50);
+    tauri::async_runtime::spawn_blocking(move || crate::library::history(limit))
+        .await
+        .map_err(|error| format!("{error}"))?
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+pub async fn history_summary(
+) -> std::result::Result<crate::library::HistorySummary, String> {
+    tauri::async_runtime::spawn_blocking(crate::library::history_summary)
+        .await
+        .map_err(|error| format!("{error}"))?
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+pub async fn clear_history() -> std::result::Result<(), String> {
+    tauri::async_runtime::spawn_blocking(crate::library::clear_history)
+        .await
+        .map_err(|error| format!("{error}"))?
+        .map_err(|error| format!("{error:#}"))
+}
+
 #[tauri::command]
 pub async fn check_updates() -> Vec<UpdateEntry> {
     // The running version is a compile-time constant; taking it from the UI meant
@@ -426,11 +475,6 @@ pub async fn check_updates() -> Vec<UpdateEntry> {
 #[tauri::command]
 pub fn environment() -> EnvironmentInfo {
     EnvironmentInfo {
-        ffmpeg: ffmpeg::ffmpeg_path().is_some(),
-        ffprobe: ffmpeg::ffprobe_path().is_some(),
-        ffmpeg_path: ffmpeg::ffmpeg_path()
-            .map(|path| path.display().to_string())
-            .unwrap_or_default(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         config_path: config::config_path().display().to_string(),
         portable: config::is_portable(),
@@ -525,7 +569,7 @@ pub async fn library_update(
     patch: crate::library::TagPatch,
 ) -> Result<crate::library::LibraryTrack, String> {
     let level = state.settings().compatibility_level;
-    // Rewriting a tag copies the file and may run ffmpeg for an MP4 container.
+    // Rewriting a tag copies the whole file and rewrites its container.
     tauri::async_runtime::spawn_blocking(move || update_tags_of(id, &patch, level))
         .await
         .map_err(|error| format!("{error}"))?
@@ -559,6 +603,9 @@ fn update_tags_of(
         disc_number: patch.disc_number.or(current.disc_number),
         genre: Some(pick(&patch.genre, &current.genre)),
         isrc: Some(current.isrc.clone()).filter(|code| !code.is_empty()),
+        label: Some(current.label.clone()).filter(|text| !text.is_empty()),
+        explicit: current.explicit,
+        composer: Some(current.composer.clone()).filter(|text| !text.is_empty()),
         // Carried over from the file: a tag rewrite must not drop them.
         cover: crate::audio::read_cover(&path),
         lyrics: Some(current.lyrics.clone()).filter(|text| !text.is_empty()),
@@ -662,7 +709,7 @@ pub async fn library_set_cover(
     path: String,
 ) -> Result<(), String> {
     let level = state.settings().compatibility_level;
-    // Copying the file and running ffmpeg is not work for the window thread.
+    // Copying the file and rewriting its tag block is not work for the window thread.
     tauri::async_runtime::spawn_blocking(move || set_cover_of(id, &path, level))
         .await
         .map_err(|error| format!("{error}"))?
@@ -709,6 +756,9 @@ fn set_cover_of(id: i64, path: &str, compatibility_level: u8) -> Result<(), Stri
         disc_number: current.disc_number,
         genre: Some(current.genre),
         isrc: Some(current.isrc).filter(|code| !code.is_empty()),
+        label: Some(current.label).filter(|text| !text.is_empty()),
+        explicit: current.explicit,
+        composer: Some(current.composer).filter(|text| !text.is_empty()),
         cover: Some(image),
         lyrics: Some(current.lyrics).filter(|text| !text.is_empty()),
         url: current.comment,

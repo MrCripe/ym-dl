@@ -3,7 +3,9 @@ mod audio;
 mod commands;
 mod config;
 mod download;
-mod ffmpeg;
+mod mp4;
+mod sidecar;
+mod transcode;
 mod image;
 mod library;
 pub mod live;
@@ -201,7 +203,10 @@ pub fn run() {
             commands::search_music,
             commands::load_likes,
             commands::start_download,
-            commands::stop_download,
+            commands::stop_download,            commands::pause_download,
+            commands::history,
+            commands::history_summary,
+            commands::clear_history,
             commands::check_updates,
             commands::environment,
             commands::open_download_dir,
