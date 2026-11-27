@@ -31,6 +31,11 @@ pub fn decrypt(mut data: Vec<u8>, key_hex: &str) -> anyhow::Result<Vec<u8>> {
 
 fn hex_to_bytes(text: &str) -> anyhow::Result<Vec<u8>> {
     let trimmed = text.trim();
+    // Sliced two bytes at a time below, so a multi-byte character would panic on
+    // a char boundary instead of failing this track.
+    if !trimmed.is_ascii() {
+        anyhow::bail!("ключ расшифровки содержит не шестнадцатеричный символ");
+    }
     if !trimmed.len().is_multiple_of(2) {
         anyhow::bail!("ключ расшифровки нечётной длины");
     }
@@ -240,8 +245,8 @@ impl TagPayload<'_> {
 }
 
 /// Temporary name for a track that is still being written: hidden, marked as a
-/// partial file, and ending with the real extension so the tagger and ffprobe
-/// still identify the container.
+/// partial file, and ending with the real extension so the tagger still
+/// identifies the container.
 pub fn part_path(final_path: &Path) -> PathBuf {
     let extension = final_path
         .extension()
@@ -257,10 +262,10 @@ pub fn part_path(final_path: &Path) -> PathBuf {
 
 /// Writes every tag the payload carries into the file.
 ///
-/// MP4 used to go through ffmpeg because an older lofty rewrote the `moov` atom
-/// without shifting the `stco` chunk offsets, which left the file unplayable.
-/// Lofty 0.22 updates those offsets itself, so every container is handled here
-/// and the app needs no external binary.
+/// MP4 used to go through an external converter because an older lofty rewrote
+/// the `moov` atom without shifting the `stco` chunk offsets, which left the file
+/// unplayable. Lofty 0.22 updates those offsets itself, so every container is
+/// handled here and the app needs no external binary.
 pub fn write_tags(path: &Path, payload: &TagPayload<'_>) -> anyhow::Result<()> {
     write_tags_lofty(path, payload)
 }
@@ -583,6 +588,15 @@ mod tests {
     use crate::model::{AlbumRef, Artist, TrackPosition};
     use serde_json::json;
 
+    /// The key comes from the network and is sliced two bytes at a time, so a
+    /// three-byte character in it used to panic on a char boundary — aborting the
+    /// whole application instead of failing one track.
+    #[test]
+    fn a_non_ascii_key_fails_instead_of_panicking() {
+        assert!(hex_to_bytes("€€").is_err());
+        assert!(hex_to_bytes("00ff00ff00ff00ff00ff00ff00ff00ff").is_ok());
+    }
+
     fn sample_track() -> Track {
         Track {
             id: json!("6705392"),
@@ -721,10 +735,10 @@ mod tag_tests {
 
     /// Real MP4 files, committed under `tests/fixtures` and copied in per test.
     ///
-    /// They used to be produced by calling ffmpeg, which meant the tests were
-    /// skipped wherever it was not installed — including CI, so the tagger's most
-    /// important regression went unchecked. A few kilobytes in the repository make
-    /// the tests run everywhere.
+    /// They used to be generated on the fly, which meant the tests were skipped
+    /// wherever the generator was not installed — including CI, so the tagger's
+    /// most important regression went unchecked. A few kilobytes in the
+    /// repository make the tests run everywhere.
     fn fixture(name: &str, dir: &Path) -> PathBuf {
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")

@@ -26,11 +26,35 @@ pub struct Artist {
     pub op_image: Option<String>,
 }
 
-/// A record label, sent either as an object or as a bare string.
-#[derive(Debug, Clone, Deserialize, Default)]
+/// A record label. The service sends it in two shapes.
+///
+/// Album payloads carry `{"name": "Хронометр", "id": …}`. Search results send a
+/// bare string in the same field, and a strict struct rejected the whole
+/// response over it — the search box then answered with a deserialization error
+/// instead of results. Both shapes are accepted and reduced to the name.
+#[derive(Debug, Clone, Default)]
 pub struct LabelRef {
-    #[serde(default)]
     pub name: String,
+}
+
+impl<'de> Deserialize<'de> for LabelRef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let name = match value {
+            serde_json::Value::String(name) => name,
+            serde_json::Value::Object(mut fields) => fields
+                .remove("name")
+                .and_then(|name| match name {
+                    serde_json::Value::String(name) => Some(name),
+                    _ => None,
+                })
+                .unwrap_or_default(),
+            // Anything else is a shape the tag writer cannot use; an empty name
+            // is dropped by the caller instead of failing the whole album.
+            _ => String::new(),
+        };
+        Ok(LabelRef { name })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -473,6 +497,22 @@ pub struct ResolveProgress {
     pub total: usize,
 }
 
+/// Progress of the library-wide quality upgrade.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeProgress {
+    pub done: usize,
+    pub total: usize,
+    pub upgraded: usize,
+    /// Tracks the service already gives at the best quality. A skip, not a failure.
+    pub best: usize,
+    pub failed: usize,
+    /// The track being re-downloaded right now, so the screen can name it.
+    pub title: String,
+    pub running: bool,
+    pub cancelled: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateEntry {
@@ -500,4 +540,55 @@ pub struct EnvironmentInfo {
     /// True when the token is currently sitting in a file, not in the store.
     pub token_file: bool,
     pub os: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Search results send `labels` as plain strings while album payloads send
+    /// objects. A strict struct failed the whole search response over it.
+    #[test]
+    fn labels_are_accepted_in_both_shapes() {
+        let payload = serde_json::json!({
+            "labels": ["Хронометр", {"name": "Мелодия", "id": 7}, 42]
+        });
+        let album: AlbumRef = serde_json::from_value(payload).expect("the album must parse");
+        let names: Vec<&str> = album
+            .labels
+            .iter()
+            .map(|label| label.name.as_str())
+            .filter(|name| !name.is_empty())
+            .collect();
+        assert_eq!(names, ["Хронометр", "Мелодия"]);
+    }
+
+    /// The real search payload, not just the bare album: the string label sits
+    /// both in the album shelf and inside every track's album, and either one
+    /// failing took the whole answer down.
+    #[test]
+    fn search_payload_accepts_string_labels() {
+        let payload = serde_json::json!({
+            "albums": { "results": [{
+                "id": 37445326,
+                "title": "Хронометр",
+                "labels": ["universal music publishing"]
+            }]},
+            "tracks": { "results": [{
+                "id": 141076326,
+                "title": "Трек",
+                "albums": [{ "id": 37445326, "labels": ["universal music publishing"] }]
+            }]}
+        });
+        let parsed: SearchPayload =
+            serde_json::from_value(payload).expect("the search payload must parse");
+        assert_eq!(
+            parsed.albums.results[0].labels[0].name,
+            "universal music publishing"
+        );
+        assert_eq!(
+            parsed.tracks.results[0].albums[0].labels[0].name,
+            "universal music publishing"
+        );
+    }
 }

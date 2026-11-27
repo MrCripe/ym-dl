@@ -672,9 +672,59 @@ pub async fn library_upgrade(
         .ok_or_else(|| "запись не найдена".to_string())?;
     let client = state.client().map_err(|error| format!("{error:#}"))?;
     let settings = state.settings();
-    crate::download::upgrade_track(&client, &settings, &entry)
+    // One writer at a time, like the download job and the whole-library pass: two
+    // upgrades running together would rewrite and then delete each other's file.
+    if state.running.swap(true, Ordering::SeqCst) {
+        return Err("Загрузка уже идёт.".into());
+    }
+    let outcome = crate::download::upgrade_track(&client, &settings, &entry)
         .await
-        .map_err(|error| format!("{error:#}"))
+        .map_err(|error| format!("{error:#}"));
+    state.running.store(false, Ordering::SeqCst);
+    outcome
+}
+
+/// Re-downloads every library track at the best quality the account is offered.
+///
+/// Runs as a job: it takes the same `running` flag and control slot a download
+/// uses, so the two never rewrite files at the same time and the existing stop
+/// command ends either one. Progress is pushed as `library://upgrade` events.
+#[tauri::command]
+pub async fn library_upgrade_all(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let client = state.client().map_err(|error| format!("{error:#}"))?;
+    let entries = tauri::async_runtime::spawn_blocking(|| {
+        crate::library::list("added", false, "")
+    })
+    .await
+    .map_err(|error| format!("{error}"))?
+    .map_err(|error| format!("{error:#}"))?;
+    if entries.is_empty() {
+        return Err("Библиотека пуста.".into());
+    }
+    if state.running.swap(true, Ordering::SeqCst) {
+        return Err("Загрузка уже идёт.".into());
+    }
+    let control = JobControl::default();
+    if let Ok(mut slot) = state.job.lock() {
+        *slot = Some(control.clone());
+    }
+    let settings = state.settings();
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::download::upgrade_library(handle.clone(), client, settings, control, entries).await;
+        if let Some(state) = handle.try_state::<AppState>() {
+            // Slot before flag, same as the download job: a start that slips in
+            // between must see `running` still set and be refused cleanly.
+            if let Ok(mut slot) = state.job.lock() {
+                *slot = None;
+            }
+            state.running.store(false, Ordering::SeqCst);
+        }
+    });
+    Ok(())
 }
 
 /// The embedded cover of one library file, as a data URL.

@@ -9,7 +9,7 @@ import {
 } from "../lib/api";
 import { useApp } from "../lib/store";
 import { useLang, useT } from "../lib/i18n";
-import { Badge, Button, Icon, IconButton, Segmented, TextField } from "../components/ui";
+import { Badge, Button, Icon, IconButton, Progress, Segmented, TextField } from "../components/ui";
 
 /**
  * Covers are read from the file on demand and kept for the session: a list of a
@@ -44,6 +44,9 @@ export default function Library() {
   const setDescending = useApp((state) => state.setLibraryDescending);
   const setFilter = useApp((state) => state.setLibraryFilter);
   const [loading, setLoading] = useState(true);
+  const upgradeJob = useApp((state) => state.upgrade);
+  const startUpgradeAll = useApp((state) => state.upgradeAll);
+  const stop = useApp((state) => state.stop);
   const [editing, setEditing] = useState<LibraryTrack | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   // Only the newest answer may touch the list: two queries in flight (a fast
@@ -74,6 +77,14 @@ export default function Library() {
     () => tracks.reduce((sum, track) => sum + track.sizeBytes, 0),
     [tracks],
   );
+
+  // The upgrade changed codecs and bitrates on disk, so the list is read again
+  // once the job is over. Only when something was actually processed: a refused
+  // start leaves the counters at zero and must not trigger a reload loop.
+  const finished = upgradeJob && !upgradeJob.running && upgradeJob.done > 0;
+  useEffect(() => {
+    if (finished) void load();
+  }, [finished, load]);
 
   const scan = async () => {
     try {
@@ -136,10 +147,43 @@ export default function Library() {
                 : t("lib.subtitleEmpty")}
             </p>
           </div>
-          <Button variant="tonal" size="compact" icon="search" onClick={() => void scan()}>
-            {t("lib.scan")}
-          </Button>
+          <div className="row">
+            <Button
+              variant="tonal"
+              size="compact"
+              icon="system_update"
+              disabled={Boolean(upgradeJob?.running) || !tracks.length}
+              onClick={() => void startUpgradeAll()}
+            >
+              {t("lib.upgradeAll")}
+            </Button>
+            <Button variant="tonal" size="compact" icon="search" onClick={() => void scan()}>
+              {t("lib.scan")}
+            </Button>
+          </div>
         </div>
+
+        {upgradeJob?.running ? (
+          <div className="lib-upgrade animate-in">
+            <Progress
+              value={upgradeJob.total ? (upgradeJob.done / upgradeJob.total) * 100 : 0}
+              indeterminate={!upgradeJob.total}
+            />
+            <span className="md-body-sm muted grow truncate">
+              {upgradeJob.total
+                ? `${upgradeJob.done} / ${upgradeJob.total}${upgradeJob.title ? ` · ${upgradeJob.title}` : ""}`
+                : t("lib.upgradeAllStarting")}
+            </span>
+            <Button
+              variant="text"
+              size="compact"
+              icon="stop_circle"
+              onClick={() => void stop()}
+            >
+              {t("lib.upgradeAllStop")}
+            </Button>
+          </div>
+        ) : null}
 
         <div className="library-toolbar">
           <TextField
@@ -185,7 +229,7 @@ export default function Library() {
               <LibraryRow
                 key={track.id}
                 track={track}
-                busy={busyId === track.id}
+                busy={busyId === track.id || Boolean(upgradeJob?.running)}
                 onPlay={() => useApp.getState().setPlaying(track)}
                 onEdit={() => setEditing(track)}
                 onUpgrade={() => void upgrade(track)}

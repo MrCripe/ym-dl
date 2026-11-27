@@ -195,6 +195,20 @@ export type UpgradeOutcome = {
   path: string | null;
 };
 
+/// Progress of the library-wide quality upgrade.
+export type UpgradeProgress = {
+  done: number;
+  total: number;
+  upgraded: number;
+  /// Tracks the service already gives at the best quality.
+  best: number;
+  failed: number;
+  /// The track being re-downloaded right now.
+  title: string;
+  running: boolean;
+  cancelled: boolean;
+};
+
 export type LibrarySort = "added" | "artist" | "album" | "year" | "title" | "duration";
 
 /// One thing waiting in the download queue: a selection and where it came from.
@@ -259,6 +273,8 @@ export const api = {
   librarySetCover: (id: number, path: string) =>
     call<void>("library_set_cover", { id, path }),
   libraryUpgrade: (id: number) => call<UpgradeOutcome>("library_upgrade", { id }),
+  /// Starts the re-download of the whole library at the best quality on offer.
+  libraryUpgradeAll: () => call<void>("library_upgrade_all"),
 };
 
 export type JobEvents = {
@@ -267,6 +283,8 @@ export type JobEvents = {
   onLog: (log: JobLog) => void;
   onFinished: (progress: JobProgress) => void;
   onResolve: (progress: { done: number; total: number }) => void;
+  onUpgrade: (progress: UpgradeProgress) => void;
+  onUpgradeFinished: (progress: UpgradeProgress) => void;
 };
 
 export async function subscribe(handlers: JobEvents): Promise<UnlistenFn> {
@@ -277,6 +295,10 @@ export async function subscribe(handlers: JobEvents): Promise<UnlistenFn> {
     listen<JobProgress>("job://finished", (event) => handlers.onFinished(event.payload)),
     listen<{ done: number; total: number }>("job://resolve", (event) =>
       handlers.onResolve(event.payload),
+    ),
+    listen<UpgradeProgress>("library://upgrade", (event) => handlers.onUpgrade(event.payload)),
+    listen<UpgradeProgress>("library://upgrade-finished", (event) =>
+      handlers.onUpgradeFinished(event.payload),
     ),
   ]);
   return () => unlisteners.forEach((off) => off());

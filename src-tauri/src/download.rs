@@ -8,7 +8,7 @@
 use crate::api::{self, Client};
 use crate::audio;
 use crate::config::Settings;
-use crate::model::{JobProgress, Track, TrackState};
+use crate::model::{JobProgress, Track, TrackState, UpgradeProgress};
 use anyhow::Result;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -21,6 +21,9 @@ pub const EVENT_TRACK: &str = "job://track";
 pub const EVENT_PROGRESS: &str = "job://progress";
 pub const EVENT_LOG: &str = "job://log";
 pub const EVENT_FINISHED: &str = "job://finished";
+/// Library-wide quality upgrade: per-track progress, then the final summary.
+pub const EVENT_UPGRADE: &str = "library://upgrade";
+pub const EVENT_UPGRADE_FINISHED: &str = "library://upgrade-finished";
 
 const BATCH: usize = 100;
 // Every tick clones the whole track state and wakes the webview; at six workers
@@ -800,6 +803,54 @@ pub async fn upgrade_track(
         },
         path: Some(final_path.display().to_string()),
     })
+}
+
+/// Re-downloads the whole library at the best quality the account is offered.
+///
+/// One track at a time: every upgrade streams a file and rewrites it in place, so
+/// parallel workers would only compete for the same link and the same disk. The
+/// stop flag is checked between tracks — never inside one — so no file is left
+/// half-written.
+pub async fn upgrade_library(
+    app: AppHandle,
+    client: Client,
+    settings: Settings,
+    control: JobControl,
+    entries: Vec<crate::library::LibraryTrack>,
+) {
+    let mut progress = UpgradeProgress {
+        total: entries.len(),
+        running: true,
+        ..Default::default()
+    };
+    let _ = app.emit(EVENT_UPGRADE, progress.clone());
+
+    for entry in &entries {
+        if control.is_cancelled() {
+            break;
+        }
+        progress.title = entry.title.clone();
+        let _ = app.emit(EVENT_UPGRADE, progress.clone());
+        match upgrade_track(&client, &settings, entry).await {
+            Ok(outcome) if outcome.status == "upgraded" => progress.upgraded += 1,
+            // "best" means the service has nothing better, which is not a failure.
+            Ok(_) => progress.best += 1,
+            Err(error) => {
+                progress.failed += 1;
+                crate::startup_log::write(&format!(
+                    "[error] Не удалось заменить «{}»: {error:#}",
+                    entry.title
+                ));
+            }
+        }
+        progress.done += 1;
+        let _ = app.emit(EVENT_UPGRADE, progress.clone());
+    }
+
+    progress.running = false;
+    progress.cancelled = control.is_cancelled();
+    progress.title.clear();
+    let _ = app.emit(EVENT_UPGRADE_FINISHED, progress);
 }
 
 /// One thing the user put in the queue: a selection and where it came from.

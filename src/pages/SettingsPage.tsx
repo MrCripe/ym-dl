@@ -518,7 +518,7 @@ export default function SettingsPage() {
         <Section icon="audio_file" title={t("set.flac")}>
           <Row
             name={t("set.extractFlac")}
-            desc={t("set.extractFlacDescNoFfmpeg")}
+            desc={t("set.extractFlacDesc")}
             control={
               <Switch
                 checked={draft.extractFlac}

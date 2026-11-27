@@ -103,7 +103,7 @@ export default function Downloads() {
     const summary = historySummary;
     return (
       <div className="page">
-        <div className="page-narrow">
+        <div key={view} className="page-narrow animate-in">
           <div className="page-header">
             <div>
               <h1>{t("dl.title")}</h1>
@@ -126,7 +126,7 @@ export default function Downloads() {
           {tabs}
 
           {summary && summary.jobs > 0 ? (
-            <div className="history-summary animate-in">
+            <div className="history-summary">
               <div className="job-stat">
                 <span className="num">{summary.jobs}</span>
                 <span className="cap">{t("dl.historyJobs")}</span>
@@ -199,7 +199,7 @@ export default function Downloads() {
   if (!visible.length && !downloading) {
     return (
       <div className="page">
-        <div className="page-narrow">
+        <div key={view} className="page-narrow animate-in">
           <div className="page-header">
             <div>
               <h1>{t("dl.title")}</h1>
@@ -223,7 +223,7 @@ export default function Downloads() {
 
   return (
     <div className="page">
-      <div className="page-narrow">
+      <div key={view} className="page-narrow animate-in">
         <div className="page-header">
           <div>
             <h1>{t("dl.title")}</h1>
@@ -258,7 +258,7 @@ export default function Downloads() {
 
         {tabs}
 
-        <div className="job-header animate-in">
+        <div className="job-header">
           <div className="job-ring">
             <svg width="72" height="72" viewBox="0 0 72 72">
               <circle

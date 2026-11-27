@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { api, subscribe, type AccountInfo, type Batch, type HistoryEntry, type HistorySummary, type JobProgress, type LibraryTrack, type LibrarySort, type Settings, type SourceInfo, type TrackState } from "./api";
+import { api, subscribe, type AccountInfo, type Batch, type HistoryEntry, type HistorySummary, type JobProgress, type LibraryTrack, type LibrarySort, type Settings, type SourceInfo, type TrackState, type UpgradeProgress } from "./api";
 import { findUpdate, installUpdate, type AvailableUpdate } from "./update";
 import { resolveLang, translate } from "./i18n";
 
@@ -61,6 +61,10 @@ type State = {
   history: HistoryEntry[];
   historySummary: HistorySummary | null;
   historyLoading: boolean;
+  /// The library-wide quality upgrade, kept here so leaving the library screen
+  /// does not hide a job that keeps running in the background.
+  upgrade: UpgradeProgress | null;
+  upgradeAll: () => Promise<void>;
   enqueue: () => void;
   dequeue: (id: number) => void;
   clearQueue: () => void;
@@ -139,6 +143,7 @@ export const useApp = create<State>((set, get) => ({
   history: [],
   historySummary: null,
   historyLoading: false,
+  upgrade: null,
   librarySort: "added",
   libraryDescending: true,
   libraryFilter: "",
@@ -183,6 +188,19 @@ export const useApp = create<State>((set, get) => ({
               : "success",
           tr(lang, "nav.downloads"),
           "downloads",
+        );
+      },
+      onUpgrade: (progress) => set({ upgrade: progress }),
+      onUpgradeFinished: (progress) => {
+        set({ upgrade: progress });
+        const lang = get().settings?.language;
+        get().toast(
+          tr(lang, "lib.upgradeAllDone", {
+            upgraded: progress.upgraded,
+            best: progress.best,
+            failed: progress.failed,
+          }),
+          progress.failed > 0 ? "error" : "success",
         );
       },
     });
@@ -368,6 +386,30 @@ export const useApp = create<State>((set, get) => ({
       await api.clearHistory();
       set({ history: [], historySummary: null });
     } catch (error) {
+      get().toast(String((error as Error).message), "error");
+    }
+  },
+
+  upgradeAll: async () => {
+    // Set before the first event arrives: the backend reads the library and asks
+    // the service first, and a button that looks untouched for a second reads as
+    // "the click did nothing".
+    set({
+      upgrade: {
+        done: 0,
+        total: 0,
+        upgraded: 0,
+        best: 0,
+        failed: 0,
+        title: "",
+        running: true,
+        cancelled: false,
+      },
+    });
+    try {
+      await api.libraryUpgradeAll();
+    } catch (error) {
+      set({ upgrade: null });
       get().toast(String((error as Error).message), "error");
     }
   },

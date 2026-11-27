@@ -218,6 +218,7 @@ pub fn run() {
             commands::library_cover,
             commands::library_set_cover,
             commands::library_upgrade,
+            commands::library_upgrade_all,
         ])
         .run(tauri::generate_context!())
         .expect("не удалось запустить приложение");

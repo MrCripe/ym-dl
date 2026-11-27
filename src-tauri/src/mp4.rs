@@ -1,4 +1,4 @@
-//! The little bit of MP4 the app needs, without ffmpeg.
+//! The little bit of MP4 the app needs.
 //!
 //! Yandex serves lossless as FLAC inside an MP4 container. Pulling that stream
 //! out into a real `.flac` is a demux, not a re-encode: the audio frames are
@@ -524,8 +524,8 @@ pub fn extract_flac(source: &Path, target: &Path) -> Result<u64> {
         }
     }
 
-    // Same size ffmpeg pads with, so the result lines up with what the reference
-    // tool produces and a later tag write is an in-place edit.
+    // The same padding the reference file carries, so the result lines up with it
+    // and a later tag write is an in-place edit.
     out.extend_from_slice(&[0x81, 0x00, 0x20, 0x00]); // PADDING, last, 8192 bytes
     out.extend_from_slice(&[0u8; PADDING]);
 
@@ -652,15 +652,15 @@ mod tests {
 
     /// The whole point of a demuxer: what comes out has to be what went in.
     ///
-    /// The reference is a file ffmpeg produced from the same container with
-    /// `-c:a copy`, committed beside the fixture so the comparison runs in CI
-    /// where ffmpeg is not installed. Everything the two share must match byte
-    /// for byte: the STREAMINFO block and every audio frame. ffmpeg additionally
-    /// writes a vendor comment naming itself and an 8 KB padding block, which are
-    /// container furniture rather than audio, so they are skipped rather than
-    /// copied — reproducing them would add 8 KB to every downloaded track.
+    /// The reference is a stream extracted from the same container by lossless
+    /// copy, committed beside the fixture so the comparison runs in CI. Everything
+    /// the two share must match byte for byte: the STREAMINFO block and every
+    /// audio frame. The reference also carries a vendor comment naming its
+    /// producer and an 8 KB padding block, which are container furniture rather
+    /// than audio, so they are skipped rather than copied — reproducing them would
+    /// add 8 KB to every downloaded track.
     #[test]
-    fn the_stream_matches_ffmpeg_byte_for_byte() {
+    fn the_stream_matches_the_reference_byte_for_byte() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("mp4-reference-test");
@@ -674,7 +674,7 @@ mod tests {
         let reference = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("fixtures")
-            .join("ffmpeg-reference.flac");
+            .join("reference-flac-stream.flac");
         let target = dir.join("ours.flac");
 
         extract_flac(&source, &target).expect("FLAC должен извлечься");
@@ -689,7 +689,7 @@ mod tests {
         // have to be what the container said they were.
         assert_eq!(
             our_info, their_info,
-            "STREAMINFO отличается: извлечённый поток описывает себя иначе, чем у ffmpeg"
+            "STREAMINFO отличается: извлечённый поток описывает себя иначе, чем эталон"
         );
         assert_eq!(
             our_audio.len(),
@@ -700,7 +700,7 @@ mod tests {
         );
         assert!(
             our_audio == their_audio,
-            "аудиокадры отличаются от того, что извлёк ffmpeg"
+            "аудиокадры отличаются от эталонного потока"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
